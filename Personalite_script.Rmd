@@ -6,6 +6,9 @@ output: html_document
 ---
 
 ```{r setup, include=T}
+####Vector Traitement
+vect_marque <- c("Total","Renault","Carrefour","Michelin","Decathlon","Sephora","Chanel","Dior")
+
 ####PACKAGE STORAGE
 library(quanteda)
 library(tm)
@@ -18,14 +21,29 @@ library(flextable)
 library(lubridate)
 library(ggplot2)
 
-df_trt <- readRDS("data.rds")
+df <- readRDS("data.rds")
 
-df_trt%>%group_by(screen_name)%>%count(user_id)%>%arrange(desc(n))
+foo <- df%>%count(screen_name)%>%arrange(desc(n))%>%filter(n<=5)
+#df%>%filter(screen_name=="_a_l_a_y_l_m_")
 
-foo <- table(df_trt$Marque)
+vect_screen <- foo$screen_name
+
+dfoo <- df%>%filter(screen_name%in%vect_screen)
+
+foo <- table(dfoo$Marque)
 foo<-as.data.frame(foo)
 names(foo)<- c("Marque","Somme")
 foo <- foo%>%arrange(desc(Somme))
 flextable(foo)
 
 ```
+```{r annotation}
+#annotation de dfoo donne df_annot
+df_annot <- readRDS("data_annot.rds")
+```
+
+```{r adjectif}
+list_adj <- df_annot%>%filter(upos=="ADJ")%>%count(token)%>%arrange(desc(n))%>%filter(n>=5)
+
+```
+

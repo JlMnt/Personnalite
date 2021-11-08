@@ -1,0 +1,107 @@
+---
+title: "Traitement_Final"
+author: "Julien Monnot & Christophe Benavent"
+date: "15/06/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+vect_prez <- c("Peugeot","Chanel","Dior","Renault","Sephora")
+
+####PACKAGE STORAGE
+library(quanteda)
+library(tm)
+library(NMF)
+library(udpipe)
+library(syuzhet)
+
+df_trt <- readRDS("Base_primaire_fr_Marque.rds")
+
+table(df_trt$Marque)
+
+df_ind <- df_trt %>%
+  filter(Marque%in%vect_prez) %>%
+  select(status_id,screen_name,text,Marque)
+
+```
+
+
+```{r annotation}
+#udpipe_download_model("french")
+
+udmodel <- udpipe_load_model("french-gsd-ud-2.5-191206.udpipe")
+
+annot_ud <- udpipe_annotate(udmodel,df_ind$text, doc_id = df_ind$status_id)
+
+annot_ud <- as.data.frame(annot_ud)
+
+names(annot_ud)[names(annot_ud) == "doc_id"] <- "status_id"
+
+df_trt_annot <- left_join(annot_ud,df_ind)
+
+#saveRDS(df_trt_annot,"df_prez_brand.rds")
+```
+
+
+
+```{r filtering, echo=FALSE}
+#df_trt_annot <- readRDS("df_prez_brand.rds")
+annot_t <- df_trt_annot %>%
+  filter(upos=="ADJ")
+
+foo <- annot_t%>%mutate(Off_Acc=ifelse(str_detect(lemma,"@.")==TRUE,"TRUE",
+                                      ifelse(str_detect(lemma,"http.")==TRUE,"TRUE",
+                                             ifelse(str_detect(lemma,"chanel.")==TRUE,"TRUE",
+                                                    ifelse(str_detect(lemma,"dior.")==TRUE,"TRUE",
+                                                           ifelse(str_detect(lemma,"peugeot.")==TRUE,"TRUE",
+                                                                  ifelse(str_detect(lemma,"renault.")==TRUE,"TRUE",
+                                                                         ifelse(str_detect(lemma,"sephora.")==TRUE,"TRUE",
+                                                                                ifelse(str_detect(lemma,"&.")==TRUE,"TRUE",
+                                "FALSE")))))))))
+foo <- foo %>%
+  filter(Off_Acc!="TRUE")
+
+foo <- foo %>%
+  mutate(ncr = nchar(lemma)) %>%
+  filter(ncr>2)
+```
+
+```{r cars}
+mydfm <- dfm(foo$lemma,
+             tolower = TRUE,
+             what = "word",
+             groups = foo$Marque)
+
+mydfm.un.trim <-
+  dfm_trim(
+    mydfm,
+min_termfreq = 50,
+max_termfreq = 52)
+
+df_txt <- mydfm.un.trim %>% 
+  convert(to = "matrix",docid_field=TRUE)
+
+#detach("package:NMF", unload = TRUE)
+#my.nmf <- nmf(df_txt,2:10,nrun=5,seed = 123)
+#plot(my.nmf)
+
+```
+
+```{r cars}
+#detach("package:NMF", unload = TRUE)
+my.nmf <- nmf(df_txt,4,nrun=5,seed = 123)
+
+aheatmap(my.nmf@fit@W)
+aheatmap(my.nmf@fit@H)
+basismap(my.nmf)
+coefmap(my.nmf)
+consensusmap(my.nmf)
+my.nmf@consensus
+w <- my.nmf@fit@W
+h <- my.nmf@fit@H
+res <- as.data.frame(w%*%h)
+
+
+t <- as.data.frame(t(res))
+
+```

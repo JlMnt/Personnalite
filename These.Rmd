@@ -1,0 +1,262 @@
+---
+title: "Untitled"
+author: "Julien Monnot"
+date: "04/01/2022"
+output: html_document
+---
+
+#Lecture des packages et des bases de données
+```{r setup}
+####PACKAGE STORAGE
+library(quanteda)
+library(dplyr)
+library(tm)
+library(stringr)
+library(udpipe)
+library(syuzhet)
+library(seededlda)
+library(tidyr)
+library(ggplot2)
+library(tidytext)
+library(quanteda.textplots)
+library(rtweet)
+library(quanteda.textstats)
+library(flextable)
+library(GGally)
+#devtools::install_github("briatte/ggnet")
+library(ggnet)
+
+#Lecture de la base de tweets primaires sans relecture qualitative
+df_trt <- readRDS("Data_primaires.rds")
+
+#Lecture de la base de données sans relecture qualitatives annotées 
+annot_adj <- readRDS("Annotation_finale_ADJ_220501.rds")
+
+```
+## Lecture des ressources : Vecteurs de tri et dictionnaire
+```{r setup2}
+#vecteur des marques cibles
+vect_these <- c("Evian","Ricard","Dior","Chanel","Total","Renault","Michelin","Carrefour","Decathlon","Sephora","SFR","BouyguesTélécom","EDF")
+
+#lecture du dictionnaire
+dict_brut <- readxl::read_excel("adjectifs de marque.xlsx")
+
+#Factorisation des catégories du tableau excel chargé
+vect_cat <- as.factor(dict_brut$`Facteur Ocean`)
+##Lecture des niveaux des catégories
+vect_cat <- levels(vect_cat)
+##Création d'un vecteur libre pour création dictionnaire
+dict_net <- c()
+
+#Création du dictionnaire
+for (val in vect_cat) {
+  foo <- dict_brut%>%filter(`Facteur Ocean`==val)
+  a <- foo$`Pré-Régex`
+  dict_net[[val]] <- a
+  }
+dict_net <- dictionary(dict_net)
+
+```
+
+##Détection des bots
+```{r botornot,eval=FALSE}
+#Ne pas lancer car très chronophage, ou sur petit échantillon de screen name
+library(tweetbotornot)
+df_bot <- botornot(foo$screen_name)
+##anti_join_si_prob_sup_a_95
+```
+
+```{r Filter, eval=FALSE}
+#table(df_trt$Marque)
+df_ind <- df_trt %>%
+  filter(Marque%in%vect_these) %>%
+  select(status_id,screen_name,text,Marque)
+
+```
+
+```{r correction, eval=FALSE}
+##ne runner que si l'annotation n'a pas encore été faîtes
+foo <- df_ind$text
+
+#Retrait des mentions
+foo <- gsub("@\\w+","",foo)
+
+#Retrait des #
+foo <- gsub('#\\w+',"",foo)
+
+#Retrait des émojis
+foo <- str_remove_all(string = foo, pattern = '[:emoji:]')
+
+#Retrait des sauts de lignes
+foo <- gsub('\n',"",foo)
+
+#Retrait des URL
+foo <- gsub('http\\S+\\s*',"",foo)
+
+#Retrait des nombres
+foo <- gsub('\\d',"",foo)
+
+#Retrait des amp
+foo <- gsub('&amp;',"",foo)
+
+#Retrait de la ponctuation
+foo <- gsub('[[:punct:]]'," ",foo)
+
+#Retrait des lettres seules
+foo <- gsub('\\W*\\b\\w\\b\\W*'," ",foo)
+
+#Retrait des emoticon
+#foo <- gsub('[^\x01-\x7F]'," ",foo)
+
+#Retrait des espaces
+foo <- gsub('\\s+$',"",foo)
+
+#Retrait des espaces
+foo <- gsub('^\\s+',"",foo)
+
+#création d'une nouvelle colonne pour l'annotation
+df_ind$text_clean <- foo
+
+```
+
+```{r annotation, eval=FALSE}
+###déja téléchargée df_trt_annot
+udmodel <- udpipe_load_model("french-gsd-ud-2.5-191206.udpipe")
+
+annot_ud <- udpipe_annotate(udmodel,df_ind$text_clean, doc_id = df_ind$status_id)
+
+annot_ud <- as.data.frame(annot_ud)
+
+names(annot_ud)[names(annot_ud) == "doc_id"] <- "status_id"
+
+df_trt_annot <- left_join(annot_ud,df_ind)
+
+#saveRDS(df_trt_annot,"Annotation_finale_220501.rds")
+
+```
+
+
+```{r filter_annot}
+
+#on met les mots en minuscule
+annot_adj$token <- tolower(annot_adj$token)
+
+annot_adj%>%
+  count(token)%>%
+  arrange(desc(n))%>%
+  head(20)
+
+vect_exclu <- c("même","tous","tout","autre","quil","jai","dune","toutes","toute","dun","cest","meme","fibre","box","hein","4G","5G","4g","5g","1er","vois","quelle","quon","Tous","Tout","quel","quune","lol","viens","90","s","via","mois","jte","€","parceque","bye","que","mêmes","svp","ouais","nest","vs","tel","c","argent","nen","jétais","ben","tiens","n","mdr","ds","quils","1l","bug","tes","oui","parles","sil","soutien","telle","ok","quun","deau","nan","penses","is","tt","yen","ya","gt","ptn","deuros","dis","jen","làbas","veux","mdrr","wsh","dattente","mdrrr","feu","qd","jme","ras","sen","muni","mtn","censé","ny","sim","t","estil","seras","gueule","nique","wifi","ai","tjrs","quen","d","auras","sexcuse","beug","apres","boire","vas","trouves","jveux","tjs","eux","tels","tres","jespère","vrmt","stp","g","2x","nes","omg","pong","sest","vasy","frero","je","pk","sy","daccord","jattends","pis","frérot","market","monsieur","ten","vrm","ect","jpeux","pourras","telles","dor","dsl","ns","atil","daide","mens","nimporte","rayon","appels","soif","dargent","rappel","bloque","merde","pr","verras","vien","prends","vu","jadore","javoue","quau","vente","fautil","ravis","jcrois","leau","quitte","salariés","vais","1x","jusquau","sah","jusquau","bbox","crois","eme","smoke","st","appelles","tkt","nn","jvais","cc","ct","daffaires","davril","faîtes","lidl","paye","sois","préfères","4l","frr","rmc","3x","attends","courses","mdrrrr","auto","bcp","issue","censée","combien","follow","jappelle","rien","xd","yes","cf","adsl","laffaire","perds","bof","êtes","fuck","lag","malaise","me","mec","ouin","précommande","routier","al","chiale","mi","oe","peuton","tinquiètes","final","freemobile","1999et","total","sfr","edf","dior","chanel","michelin","evian","ricard","renault","carrefour","decathlon","sephora","edf","bouyguestélécom")
+
+vect_exclu<-as.data.frame(vect_exclu)
+names(vect_exclu)<-"token"
+
+stpwrd <- stopwords("fr")
+stpwrd<-as.data.frame(stpwrd)
+names(stpwrd)<-"token"
+
+annot_adj <- anti_join(annot_adj,vect_exclu,by="token")
+annot_adj <- anti_join(annot_adj,stpwrd,by="token")
+#table(str_detect(annot_adj$token,"mdr*"))
+```
+
+##Construction de la DFM
+```{r dfm_annot}
+mydfm <- dfm(annot_adj$lemma,
+             tolower = TRUE,
+             what = "word")
+
+mydfm$Marque <- annot_adj$Marque
+
+mydfm.un.trim <-
+  dfm_trim(
+    mydfm,
+min_termfreq = 0.0001,
+max_termfreq = 0.1,
+termfreq_type ="prop")
+
+```
+
+```{r plot_gen,eval=FALSE}
+#Génération mots les plus utilisés
+mydfm %>% 
+  textstat_frequency(n = 25) %>% 
+  ggplot(aes(x = reorder(feature, frequency), y = frequency)) +
+  geom_point() +
+  coord_flip() +
+  labs(x = NULL, y = "Frequency") +
+  theme_minimal()
+
+```
+
+```{r plot_mrq,eval=FALSE}
+#Génération mots les plus utilisés par marque
+for (val in vect_these) {
+  foo <- dfm_subset(mydfm,Marque==val)
+  
+  foo <- foo %>% 
+  textstat_frequency(n = 25) %>% 
+  ggplot(aes(x = reorder(feature, frequency), y = frequency)) +
+  geom_point() +
+  coord_flip() +
+  labs(x = val, y = "Frequency") +
+  theme_minimal()
+  print(foo)
+}
+
+```
+
+
+```{r wordcloud_evian_ricard}
+vect_wordcloud <- c("Evian","Ricard")
+
+dfm_wordcld <- dfm_subset(mydfm,Marque%in%vect_wordcloud)
+
+dfm_wordcld <- dfm_group(dfm_wordcld,
+                         groups = Marque)
+
+textplot_wordcloud(dfm_wordcld,
+                   comparison = TRUE,
+                   max_words = 100,
+                   min_size = 1)
+```
+
+```{r wordcloud_dior_chanel}
+vect_wordcloud <- c("Dior","Chanel")
+
+dfm_wordcld <- dfm_subset(mydfm,Marque%in%vect_wordcloud)
+
+dfm_wordcld <- dfm_group(dfm_wordcld,
+                         groups = Marque)
+
+textplot_wordcloud(dfm_wordcld,
+                   comparison = TRUE,
+                   max_words = 100,
+                   min_size = 1)
+```
+
+```{r lda}
+for (val in vect_these) {
+  foo <- dfm_subset(mydfm,Marque==val)
+
+  lda <- textmodel_seededlda(
+  foo,
+  dict_net,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  min_termfreq=2,
+  alpha = NULL,
+  beta = NULL)
+
+foo <- as.data.frame(terms(lda,20))
+foo <- flextable(foo)
+
+foo <- set_caption(foo, caption = val)
+print(foo)
+#topics(lda)
+
+}
+
+
+```

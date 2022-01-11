@@ -14,3 +14,4 @@ https://cran.r-project.org/web/packages/nametagger/nametagger.pdf
 https://stackoverflow.com/questions/58123522/find-documents-that-include-one-of-a-list-of-words-in-r
 https://cran.r-project.org/web/packages/udpipe/udpipe.pdf
 https://tutorials.quanteda.io/basic-operations/tokens/tokens_ngrams/
+https://universaldependencies.org/

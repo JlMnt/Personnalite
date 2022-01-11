@@ -38,6 +38,9 @@ annot_adj <- readRDS("Annotation_finale_ADJ_220501.rds")
 #vecteur des marques cibles
 vect_these <- c("Evian","Ricard","Dior","Chanel","Total","Renault","Michelin","Carrefour","Decathlon","Sephora","SFR","BouyguesTélécom","EDF")
 
+#vecteur des dépendances cibles
+vect_dep <- c("root","xcomp","fixed")
+
 #lecture du dictionnaire
 dict_brut <- readxl::read_excel("adjectifs de marque.xlsx")
 
@@ -146,7 +149,7 @@ annot_adj%>%
   arrange(desc(n))%>%
   head(20)
 
-vect_exclu <- c("même","tous","tout","autre","quil","jai","dune","toutes","toute","dun","cest","meme","fibre","box","hein","4G","5G","4g","5g","1er","vois","quelle","quon","Tous","Tout","quel","quune","lol","viens","90","s","via","mois","jte","€","parceque","bye","que","mêmes","svp","ouais","nest","vs","tel","c","argent","nen","jétais","ben","tiens","n","mdr","ds","quils","1l","bug","tes","oui","parles","sil","soutien","telle","ok","quun","deau","nan","penses","is","tt","yen","ya","gt","ptn","deuros","dis","jen","làbas","veux","mdrr","wsh","dattente","mdrrr","feu","qd","jme","ras","sen","muni","mtn","censé","ny","sim","t","estil","seras","gueule","nique","wifi","ai","tjrs","quen","d","auras","sexcuse","beug","apres","boire","vas","trouves","jveux","tjs","eux","tels","tres","jespère","vrmt","stp","g","2x","nes","omg","pong","sest","vasy","frero","je","pk","sy","daccord","jattends","pis","frérot","market","monsieur","ten","vrm","ect","jpeux","pourras","telles","dor","dsl","ns","atil","daide","mens","nimporte","rayon","appels","soif","dargent","rappel","bloque","merde","pr","verras","vien","prends","vu","jadore","javoue","quau","vente","fautil","ravis","jcrois","leau","quitte","salariés","vais","1x","jusquau","sah","jusquau","bbox","crois","eme","smoke","st","appelles","tkt","nn","jvais","cc","ct","daffaires","davril","faîtes","lidl","paye","sois","préfères","4l","frr","rmc","3x","attends","courses","mdrrrr","auto","bcp","issue","censée","combien","follow","jappelle","rien","xd","yes","cf","adsl","laffaire","perds","bof","êtes","fuck","lag","malaise","me","mec","ouin","précommande","routier","al","chiale","mi","oe","peuton","tinquiètes","final","freemobile","1999et","total","sfr","edf","dior","chanel","michelin","evian","ricard","renault","carrefour","decathlon","sephora","edf","bouyguestélécom")
+vect_exclu <- c("même","tous","tout","autre","quil","jai","dune","toutes","toute","dun","cest","meme","fibre","box","hein","4G","5G","4g","5g","1er","vois","quelle","quon","Tous","Tout","quel","quune","lol","viens","90","s","via","mois","jte","€","parceque","bye","que","mêmes","svp","ouais","nest","vs","tel","c","argent","nen","jétais","ben","tiens","n","mdr","ds","quils","1l","bug","tes","oui","parles","sil","soutien","telle","ok","quun","deau","nan","penses","is","tt","yen","ya","gt","ptn","deuros","dis","jen","làbas","veux","mdrr","wsh","dattente","mdrrr","feu","qd","jme","ras","sen","muni","mtn","censé","ny","sim","t","estil","seras","gueule","nique","wifi","ai","tjrs","quen","d","auras","sexcuse","beug","apres","boire","vas","trouves","jveux","tjs","eux","tels","tres","jespère","vrmt","stp","g","2x","nes","omg","pong","sest","vasy","frero","je","pk","sy","daccord","jattends","pis","frérot","market","monsieur","ten","vrm","ect","jpeux","pourras","telles","dor","dsl","ns","atil","daide","mens","nimporte","rayon","appels","soif","dargent","rappel","bloque","merde","pr","verras","vien","prends","vu","jadore","javoue","quau","vente","fautil","ravis","jcrois","leau","quitte","salariés","vais","1x","jusquau","sah","jusquau","bbox","crois","eme","smoke","st","appelles","tkt","nn","jvais","cc","ct","daffaires","davril","faîtes","lidl","paye","sois","préfères","4l","frr","rmc","3x","attends","courses","mdrrrr","auto","bcp","issue","censée","combien","follow","jappelle","rien","xd","yes","cf","adsl","laffaire","perds","bof","êtes","fuck","lag","malaise","me","ème","mec","ouin","précommande","routier","al","chiale","mi","oe","peuton","tinquiètes","final","freemobile","1999et","total","sfr","edf","dior","chanel","michelin","evian","ricard","renault","carrefour","decathlon","sephora","edf","bouyguestélécom")
 
 vect_exclu<-as.data.frame(vect_exclu)
 names(vect_exclu)<-"token"
@@ -158,15 +161,22 @@ names(stpwrd)<-"token"
 annot_adj <- anti_join(annot_adj,vect_exclu,by="token")
 annot_adj <- anti_join(annot_adj,stpwrd,by="token")
 #table(str_detect(annot_adj$token,"mdr*"))
+table(annot_adj$dep_rel)
+
+#foo <- annot_adj%>%filter(dep_rel=="fixed")
 ```
 
 ##Construction de la DFM
 ```{r dfm_annot}
-mydfm <- dfm(annot_adj$lemma,
+#annot_adj%>%filter(dep_rel=="acl:relcl")
+annot_adj_dep <- annot_adj%>%
+  filter(dep_rel%in%vect_dep)
+
+mydfm <- dfm(annot_adj_dep$lemma,
              tolower = TRUE,
              what = "word")
 
-mydfm$Marque <- annot_adj$Marque
+mydfm$Marque <- annot_adj_dep$Marque
 
 mydfm.un.trim <-
   dfm_trim(
@@ -260,3 +270,5 @@ print(foo)
 
 
 ```
+
+

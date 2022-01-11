@@ -1,0 +1,156 @@
+---
+title: "Word2vec"
+author: "Julien Monnot"
+date: "09/01/2022"
+output: html_document
+---
+
+#Lecture des packages et des bases de données
+```{r setup}
+####PACKAGE STORAGE
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(tidytext)
+library(rtweet)
+
+#Lecture de la base de tweets primaires sans relecture qualitative
+df_trt <- readRDS("Data_primaires.rds")
+
+```
+## Lecture des ressources : Vecteurs de tri et dictionnaire
+```{r setup2}
+#vecteur des marques cibles
+vect_these <- c("Evian","Ricard","Dior","Chanel","Total","Renault","Michelin","Carrefour","Decathlon","Sephora","SFR","BouyguesTélécom","EDF")
+
+#lecture du dictionnaire
+dict_brut <- readxl::read_excel("adjectifs de marque.xlsx")
+
+#Factorisation des catégories du tableau excel chargé
+vect_cat <- as.factor(dict_brut$`Facteur Ocean`)
+##Lecture des niveaux des catégories
+vect_cat <- levels(vect_cat)
+##Création d'un vecteur libre pour création dictionnaire
+dict_net <- c()
+
+#Création du dictionnaire
+for (val in vect_cat) {
+  foo <- dict_brut%>%filter(`Facteur Ocean`==val)
+  a <- foo$`Pré-Régex`
+  dict_net[[val]] <- a
+  }
+dict_net <- dictionary(dict_net)
+
+```
+
+```{r Filter, eval=FALSE}
+#table(df_trt$Marque)
+df_ind <- df_trt %>%
+  filter(Marque%in%vect_these) %>%
+  select(status_id,screen_name,text,Marque)
+
+```
+
+```{r correction, eval=FALSE}
+##ne runner que si l'annotation n'a pas encore été faîtes
+foo <- df_ind$text
+
+#Retrait des mentions
+foo <- gsub("@\\w+","",foo)
+
+#Retrait des #
+foo <- gsub('#\\w+',"",foo)
+
+#Retrait des URL
+foo <- gsub('http\\S+\\s*',"",foo)
+
+#Retrait des sauts de lignes
+foo <- gsub('\n',"",foo)
+
+#Retrait des espaces
+foo <- gsub('\\s+$',"",foo)
+
+#Retrait des espaces
+foo <- gsub('^\\s+',"",foo)
+
+#Retrait des émojis
+#foo <- str_remove_all(string = foo, pattern = '[:emoji:]')
+
+#création d'une nouvelle colonne pour l'annotation
+df_ind$text_clean <- foo
+
+```
+
+```{r }
+
+unigram_probs <- df_ind %>%
+    unnest_tokens(word, text_clean) %>%
+    count(word, sort = TRUE) %>%
+    mutate(p = n / sum(n))
+
+unigram_probs
+
+library(widyr)
+
+tidy_skipgrams <- df_ind %>%
+    unnest_tokens(ngram, text_clean, token = "ngrams", n = 8) %>%
+    mutate(ngramID = row_number()) %>% 
+    unite(skipgramID, status_id, ngramID) %>%
+    unnest_tokens(word, ngram)
+
+tidy_skipgrams
+
+skipgram_probs <- tidy_skipgrams %>%
+    pairwise_count(word, skipgramID, diag = TRUE, sort = TRUE) %>%
+    mutate(p = n / sum(n))
+
+normalized_prob <- skipgram_probs %>%
+    filter(n > 20) %>%
+    rename(word1 = item1, word2 = item2) %>%
+    left_join(unigram_probs %>%
+                  select(word1 = word, p1 = p),
+              by = "word1") %>%
+    left_join(unigram_probs %>%
+                  select(word2 = word, p2 = p),
+              by = "word2") %>%
+    mutate(p_together = p / p1 / p2)
+
+normalized_prob %>% 
+    filter(word1 == "bon") %>%
+    arrange(-p_together)
+
+pmi_matrix <- normalized_prob %>%
+    mutate(pmi = log10(p_together)) %>%
+    cast_sparse(word1, word2, pmi)
+
+library(irlba)
+
+pmi_svd <- irlba(pmi_matrix, 256, maxit = 1e3)
+```
+
+```{r lda}
+for (val in vect_these) {
+  foo <- dfm_subset(mydfm,Marque==val)
+
+  lda <- textmodel_seededlda(
+  foo,
+  dict_net,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  min_termfreq=2,
+  alpha = NULL,
+  beta = NULL)
+
+foo <- as.data.frame(terms(lda,20))
+foo <- flextable(foo)
+
+foo <- set_caption(foo, caption = val)
+print(foo)
+#topics(lda)
+
+}
+
+
+```
+

@@ -264,11 +264,67 @@ foo <- flextable(foo)
 
 foo <- set_caption(foo, caption = val)
 print(foo)
-#topics(lda)
+topics(lda)
 
 }
 
 
 ```
 
+```{r lda_theta}
+facto_mrq <- data.frame()
+for (val in vect_these) {
+  foo <- dfm_subset(mydfm,Marque==val)
+
+  lda <- textmodel_seededlda(
+  foo,
+  dict_net,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  min_termfreq=2,
+  alpha = NULL,
+  beta = NULL)
+
+
+foo <- as.data.frame(lda$theta)
+foo <- foo%>%mutate(Marque=val)
+facto_mrq <- rbind(facto_mrq,foo)
+
+}
+print(facto_mrq)
+
+data <- facto_mrq%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==1)
+
+gg1 <- ggplot(data,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=Scores_mn - Score_sd,ymax=Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+gg0 <- ggplot(data,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+```
+
+```{r lda_theta}
+data <- facto_mrq%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  group_by(Marque,facteurs)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE))%>%
+  pivot_wider(names_from = "facteurs",values_from = "Scores_mn")
+
+library(FactoMineR)
+library(factoextra)
+
+data_pca <- PCA(data[,2:12])
+
+fviz_ca_biplot(data_pca$eig)
+
+fviz_pca_biplot(data_pca, repel = TRUE,
+                col.var = "#2E9FDF", # Couleur des variables
+                col.ind = "#696969"
+                )
+```
 

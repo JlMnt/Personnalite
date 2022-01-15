@@ -13,6 +13,7 @@ library(tidyr)
 library(ggplot2)
 library(tidytext)
 library(rtweet)
+library(stringi)
 
 #Lecture de la base de tweets primaires sans relecture qualitative
 df_trt <- readRDS("Data_primaires.rds")
@@ -21,7 +22,7 @@ df_trt <- readRDS("Data_primaires.rds")
 ## Lecture des ressources : Vecteurs de tri et dictionnaire
 ```{r setup2}
 #vecteur des marques cibles
-vect_these <- c("Evian","Ricard","Dior","Chanel","Total","Renault","Michelin","Carrefour","Decathlon","Sephora","SFR","BouyguesTélécom","EDF")
+vect_these <- c("Chanel")
 
 #lecture du dictionnaire
 dict_brut <- readxl::read_excel("adjectifs de marque.xlsx")
@@ -61,11 +62,29 @@ foo <- gsub("@\\w+","",foo)
 #Retrait des #
 foo <- gsub('#\\w+',"",foo)
 
-#Retrait des URL
-foo <- gsub('http\\S+\\s*',"",foo)
+#Retrait des émojis
+foo <- str_remove_all(string = foo, pattern = '[:emoji:]')
 
 #Retrait des sauts de lignes
 foo <- gsub('\n',"",foo)
+
+#Retrait des URL
+foo <- gsub('http\\S+\\s*',"",foo)
+
+#Retrait des nombres
+foo <- gsub('\\d',"",foo)
+
+#Retrait des amp
+foo <- gsub('&amp;',"",foo)
+
+#Retrait de la ponctuation
+foo <- gsub('[[:punct:]]'," ",foo)
+
+#Retrait des lettres seules
+foo <- gsub('\\W*\\b\\w\\b\\W*'," ",foo)
+
+#Retrait des emoticon
+#foo <- gsub('[^\x01-\x7F]'," ",foo)
 
 #Retrait des espaces
 foo <- gsub('\\s+$',"",foo)
@@ -73,59 +92,23 @@ foo <- gsub('\\s+$',"",foo)
 #Retrait des espaces
 foo <- gsub('^\\s+',"",foo)
 
-#Retrait des émojis
-#foo <- str_remove_all(string = foo, pattern = '[:emoji:]')
-
 #création d'une nouvelle colonne pour l'annotation
-df_ind$text_clean <- foo
+df_ind$text <- foo
 
 ```
 
-```{r }
 
-unigram_probs <- df_ind %>%
-    unnest_tokens(word, text_clean) %>%
-    count(word, sort = TRUE) %>%
-    mutate(p = n / sum(n))
+```{r word2vec}
+toks <- tokens(df_ind$text,
+               remove_punct = TRUE)
 
-unigram_probs
+toks_grm <- tokens_ngrams(toks,n=2,skip = 1:2)
 
-library(widyr)
+toks_neg_grm <- tokens_compound(toks,pattern = phrase("pas "))
 
-tidy_skipgrams <- df_ind %>%
-    unnest_tokens(ngram, text_clean, token = "ngrams", n = 8) %>%
-    mutate(ngramID = row_number()) %>% 
-    unite(skipgramID, status_id, ngramID) %>%
-    unnest_tokens(word, ngram)
+toks_neg_grm_sel <- tokens_select(toks_neg_grm,pattern = phrase("pas_*"))
+head(toks_neg_grm_sel[[1]])
 
-tidy_skipgrams
-
-skipgram_probs <- tidy_skipgrams %>%
-    pairwise_count(word, skipgramID, diag = TRUE, sort = TRUE) %>%
-    mutate(p = n / sum(n))
-
-normalized_prob <- skipgram_probs %>%
-    filter(n > 20) %>%
-    rename(word1 = item1, word2 = item2) %>%
-    left_join(unigram_probs %>%
-                  select(word1 = word, p1 = p),
-              by = "word1") %>%
-    left_join(unigram_probs %>%
-                  select(word2 = word, p2 = p),
-              by = "word2") %>%
-    mutate(p_together = p / p1 / p2)
-
-normalized_prob %>% 
-    filter(word1 == "bon") %>%
-    arrange(-p_together)
-
-pmi_matrix <- normalized_prob %>%
-    mutate(pmi = log10(p_together)) %>%
-    cast_sparse(word1, word2, pmi)
-
-library(irlba)
-
-pmi_svd <- irlba(pmi_matrix, 256, maxit = 1e3)
 ```
 
 ```{r lda}

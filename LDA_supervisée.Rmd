@@ -1,0 +1,305 @@
+---
+title: "LDA_supervisée"
+author: "Julien Monnot & Christophe Benavent"
+date: "26/04/2022"
+output: html_document
+---
+
+# La personnalité de marque sur Twitter : Etude de cas sur 11 comptes français du secteur de l'automobile
+
+## La personnalité en marketing
+
+## Méthodologie
+
+## Données
+
+## Résultats
+
+```{r Chargement_librairies, include=FALSE}
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+#On charge lespackages
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(lubridate)
+library(tidyverse)
+library(udpipe)
+library(tidytext)
+library(textdata)
+library(syuzhet)
+library(quanteda)
+library(quanteda.textstats)
+library(FactoMineR)
+library(factoextra)
+library(knitr)
+library(ggpubr)
+date <- Sys.Date()
+
+#lecture du dictionnaire
+dict_brut <- readxl::read_excel("adjectifs de marque.xlsx")
+
+#Factorisation des catégories du tableau excel chargé
+vect_cat <- as.factor(dict_brut$`Facteur Ocean`)
+##Lecture des niveaux des catégories
+vect_cat <- levels(vect_cat)
+##Création d'un vecteur libre pour création dictionnaire
+dict_net <- c()
+
+#Création du dictionnaire
+for (val in vect_cat) {
+  foo <- dict_brut%>%filter(`Facteur Ocean`==val)
+  a <- foo$Regex_lda
+  dict_net[[val]] <- a
+  }
+dict_net <- dictionary(dict_net)
+
+```
+
+```{r Nettoyage_du_texte, include=FALSE}
+#On crée un vecteur réunissant les noms des tweets des marques requêtées
+data <- (Sys.glob("*.rds"))
+data <- as.data.frame(data)%>%
+  filter(str_detect(data,"tweets"))%>%
+  as.list(data)%>%
+  unlist()
+
+list_df <- lapply(data, function(x) readRDS(x))
+
+#Bind
+df_tweets_mrq <- bind_rows(list_df)
+
+
+#Unique test
+doublons <- which(duplicated(df_tweets_mrq$status_id))
+df_tweets_mrq <- df_tweets_mrq[-doublons,]
+
+#df_tweets_mrq <- df_tweets_mrq%>%filter(is_retweet=="FALSE")
+
+df_tweets_mrq <- df_tweets_mrq %>%
+  filter(lang=="fr")%>%
+  group_by(name)%>%
+  mutate(name=strsplit(name," ")[[1]][1])
+
+#Retrait des @,url,sauts de lignes, espaces
+foo <- df_tweets_mrq$text
+
+  #Retrait des mentions
+  foo <- gsub("@\\w+","",foo)
+  
+  #Retrait des #
+  foo <- gsub('#\\w+',"",foo)
+  
+  #Retrait des émojis
+  foo <- str_remove_all(string = foo, pattern = '[:emoji:]')
+  
+  #Retrait des sauts de lignes
+  foo <- gsub('\n',"",foo)
+  
+  #Retrait des URL
+  foo <- gsub('http\\S+\\s*',"",foo)
+  
+  #Retrait des nombres
+  foo <- gsub('\\d',"",foo)
+  
+  #Retrait des amp
+  foo <- gsub('&amp;',"",foo)
+  
+  #Retrait de la ponctuation
+  foo <- gsub('[[:punct:]]'," ",foo)
+  
+  #Retrait des lettres seules
+  foo <- gsub('\\W*\\b\\w\\b\\W*'," ",foo)
+  
+  #Retrait des espaces
+  foo <- gsub('\\s+$',"",foo)
+  
+  #Retrait des espaces
+  foo <- gsub('^\\s+',"",foo)
+df_tweets_mrq$Text_clean <- foo
+```
+
+
+```{r Qualifier_les_tweets}
+#On crée des catégories afin de ne traiter que les tweets primaires
+df_tweets_mrq <- df_tweets_mrq%>%
+  mutate(Type=ifelse(is_retweet=="TRUE","Retweets",
+                     ifelse(is_quote=="TRUE"&is.na(reply_to_screen_name),"Quotes",
+                            ifelse(!is.na(reply_to_screen_name),"Replies","Primaires"))))%>%
+  mutate(dte = year(created_at),#On créée une colonne avec l'année
+         wek = week(created_at),#On créée une colonne avec la semaine
+         grp_twt= paste0(dte,wek,name))%>%#On concatène les trois colonnes pour créer une colonne nous permettant de concaténer les tweets ensemble par semaine de production pour chaque marque
+  filter(Type=="Primaires")#On filtre les données pour ne garder que la production primaire
+```
+
+
+```{r annotation}
+#On annote le texte afin de ne sélectionner que les adjectifs
+df_annot <- df_tweets_mrq
+
+#udpipe_download_model("french")
+udmodel <- udpipe_load_model("french-gsd-ud-2.5-191206.udpipe")
+
+annot_ud <- udpipe_annotate(udmodel,df_annot$Text_clean, doc_id = df_annot$status_id)
+
+annot_ud <- as.data.frame(annot_ud)
+
+names(annot_ud)[names(annot_ud) == "doc_id"] <- "status_id"
+
+df_trt_annot <- left_join(annot_ud,df_annot)
+
+#saveRDS(df_trt_annot,"Annotation_220125.rds")
+
+df_trt_adj <- df_trt_annot%>%
+  filter(upos=="ADJ")%>%
+  mutate(Nbcar=nchar(lemma),Mention=str_detect(lemma,"\\@"))%>%
+  filter(Nbcar>2,Mention=="FALSE")
+```
+
+```{r group_par_weeks}
+#On groupe les adjectifs ensembles, par semaine de production
+
+grp_filt <- levels(as.factor(df_trt_adj$grp_twt))#On crée une liste avec l'ensemble des semaines de production, par marque
+
+#On créé un dataframe pour aggréger les données
+df_grp <- data.frame()
+
+#On crée une boucle, elle va filtrer pour chaque valeur de la liste les tweets de la semaine
+for (val in grp_filt) {
+  foo <- df_trt_adj%>%
+    filter(grp_twt==val)
+  
+  #On charge le nom pour garder la marque produisant les tweets dans le nouveau tableau de données  
+  name<-unique(foo$name)
+  
+  #A changer en fonction de si l'on souhaite travailler sur les lemmes ou non, besoin après de supprimer les stopwords dans la dfm
+  text<-paste0(foo$lemma,collapse = " ")
+  
+  #On conserve la valeur de la liste identifiant la semaine de production   
+  dt <- unique(foo$grp_twt)
+  
+  #On agglomère les résultats dans une liste avec trois entrées 
+  df_foo<-cbind(name,text,dt)
+
+  #On transforme cette liste en un tableau de données à une ligne
+  df_foo<-as.data.frame(df_foo)
+  
+  #On fusionne les lignes entre elles dans le tableau de données aggrégées
+  df_grp<- rbind(df_grp,df_foo)
+}
+
+
+```
+
+```{r lda_supervisée}
+library(seededlda)
+library(flextable)
+#stpwrds <- stopwords("fr")
+
+#On crée la dfm pour lancer la LDA
+foo <- dfm(df_grp$text,remove_padding = TRUE,tolower = TRUE)
+
+#On conserve les métadonnées des documents (nom de la marque)
+docvars(foo,"Marque")<-df_grp$name
+
+#foo <- dfm_remove(foo,stpwrds)
+
+lda <- textmodel_seededlda(
+  foo,
+  dict_net,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  alpha = NULL,
+  beta = NULL)
+
+#On sélectionne les 20 terms les plus représentatifs des catégories
+foo <- terms(lda,n=20)
+
+#On créée un tableau
+foo <- as.data.frame(foo)
+
+#On sélectionne les 11 premières colonnes
+foo<-foo%>%select(1:11)
+
+#On affiche le tableau de données
+print(foo)
+
+```
+
+
+```{r visualisation}
+#On récupère les métadonnées du modèle
+ld <- as.data.frame(lda$data@docvars)
+
+#On récupère les coefficients theta de probabilité d'association d'un mot à un topic
+lt <- as.data.frame(lda$theta)
+
+lt$docname_ <- rownames(lt)
+
+#On fusionne les deux tableaux de données
+data <- inner_join(ld,lt,by="docname_")
+data<- data[4:14]
+
+#On filtre les données et l'on crée des scores moyens et un écart-type pour les valeurs positives
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==1)
+
+#On visualise
+gg1 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=Scores_mn - Score_sd,ymax=Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+
+#On filtre les données et l'on crée des scores moyens et un écart-type pour les valeurs négatives
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==0)
+
+#On visualise
+gg1 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=-Scores_mn - Score_sd,ymax=-Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+
+```
+
+```{r 19}
+#On reprend le tableau et on le prépare pour l'ACP
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  group_by(Marque,facteurs)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE))%>%
+  pivot_wider(names_from = "facteurs",values_from = "Scores_mn")
+
+library(FactoMineR)
+library(factoextra)
+
+#On lance l'ACP en ommétant la variable qualitative propre au nom de la marque
+data_pca <- PCA(df[,2:11])
+
+fgg <- fviz_pca_biplot(data_pca, repel = TRUE,
+                col.var = "#2E9FDF", # Couleur des variables
+                col.ind = "#696969",
+                label = "var"
+                )
+lab <- as.data.frame(data_pca$ind$coord)
+lab$Marque <- df$Marque
+#explor::explor(data_pca)
+fgg+
+  geom_text(data = lab, aes(x = Dim.1, y = Dim.2, label = Marque), hjust = -.1, vjust =-.1)
+  
+```

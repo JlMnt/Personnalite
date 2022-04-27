@@ -1,0 +1,863 @@
+---
+title: "Article"
+author: " Christophe Benavent, Julien Monnot"
+date: "06/03/2022"
+output: html_document
+---
+
+# La personnalité de marque sur Twitter : Etude de cas sur 11 comptes français du secteur de l'automobile
+```{r 0, include=FALSE}
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+library(rtweet)
+library(dplyr)
+library(stringr)
+library(igraph)
+library(ggplot2)
+library(ggmap)
+library(lubridate)
+library(tidyverse)
+library(forestmangr)
+library(scales)
+library(udpipe)
+library(tidytext)
+library(textdata)
+library(syuzhet)
+library(lattice)
+library(quanteda)
+library(quanteda.textstats)
+library(cowplot)
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+library(ggridges)
+library(knitr)
+library(ggpubr)
+date <- Sys.Date()
+
+#Création des vecteurs pour les tris
+senti_pol <- c("positive","negative")
+senti_emo <-c("anger","anticipation","disgust","fear","joy","surprise","sadness","trust")
+senti_bad <- c("anger","disgust","fear","sadness")
+senti_plu <-c("anticipation","joy","surprise","trust")
+
+#lecture du dictionnaire
+dict_brut <- readxl::read_excel("adjectifs de marque.xlsx")
+
+#Factorisation des catégories du tableau excel chargé
+vect_cat <- as.factor(dict_brut$`Facteur Ocean`)
+##Lecture des niveaux des catégories
+vect_cat <- levels(vect_cat)
+##Création d'un vecteur libre pour création dictionnaire
+dict_net <- c()
+
+#Création du dictionnaire
+for (val in vect_cat) {
+  foo <- dict_brut%>%filter(`Facteur Ocean`==val)
+  a <- foo$Regex_lda
+  dict_net[[val]] <- a
+  }
+dict_net <- dictionary(dict_net)
+
+```
+
+## R Markdown
+
+```{r 1, include=FALSE}
+#On crée un vecteur réunissant les noms des tweets des marques requêtées
+data <- (Sys.glob("*.rds"))
+data <- as.data.frame(data)%>%
+  filter(str_detect(data,"tweets"))%>%
+  as.list(data)%>%
+  unlist()
+
+list_df <- lapply(data, function(x) readRDS(x))
+
+#Bind
+df_tweets_mrq <- bind_rows(list_df)
+
+
+#Unique test
+doublons <- which(duplicated(df_tweets_mrq$status_id))
+df_tweets_mrq <- df_tweets_mrq[-doublons,]
+
+#df_tweets_mrq <- df_tweets_mrq%>%filter(is_retweet=="FALSE")
+
+df_tweets_mrq <- df_tweets_mrq %>%
+  filter(lang=="fr")%>%
+  group_by(name)%>%
+  mutate(name=strsplit(name," ")[[1]][1])
+
+#Retrait des @,url,sauts de lignes, espaces
+foo <- df_tweets_mrq$text
+
+  #Retrait des mentions
+  foo <- gsub("@\\w+","",foo)
+  
+  #Retrait des #
+  foo <- gsub('#\\w+',"",foo)
+  
+  #Retrait des émojis
+  foo <- str_remove_all(string = foo, pattern = '[:emoji:]')
+  
+  #Retrait des sauts de lignes
+  foo <- gsub('\n',"",foo)
+  
+  #Retrait des URL
+  foo <- gsub('http\\S+\\s*',"",foo)
+  
+  #Retrait des nombres
+  foo <- gsub('\\d',"",foo)
+  
+  #Retrait des amp
+  foo <- gsub('&amp;',"",foo)
+  
+  #Retrait de la ponctuation
+  foo <- gsub('[[:punct:]]'," ",foo)
+  
+  #Retrait des lettres seules
+  foo <- gsub('\\W*\\b\\w\\b\\W*'," ",foo)
+  
+  #Retrait des espaces
+  foo <- gsub('\\s+$',"",foo)
+  
+  #Retrait des espaces
+  foo <- gsub('^\\s+',"",foo)
+df_tweets_mrq$Text_clean <- foo
+```
+
+```{r 2}
+
+df_tweets_mrq$Date <- ceiling_date(df_tweets_mrq$created_at,"weeks")
+foo <- df_tweets_mrq%>%
+  group_by(name,Date)%>%
+  count(name)%>%
+  ungroup()
+
+ggplot(foo,aes(Date,n,color=name))+geom_line(show.legend = FALSE)+facet_grid(rows = vars(name))+ ggtitle("Nombre de posts hebdomadaires") + xlab("Année de publication") + ylab("") + labs(caption = "Source: Données collectées via Rtweet sur Twitter")+ guides(fill=guide_legend(title="Marque"))+ylim(0,80)+theme_minimal()# geom_smooth(method=lm , color="lightblue", se=TRUE,size=0.1)
+
+```
+
+```{r 3}
+foo_synth <- df_tweets_mrq%>%
+  group_by(name)%>%
+  select(name,followers_count,friends_count,account_created_at,created_at,statuses_count)%>%
+  rename(Marque=name)%>%
+  summarise(Min.Fol=min(followers_count),
+            Max.Fol=max(followers_count),
+            Min.Fri=min(friends_count),
+            Max.Fri=max(friends_count),
+            Date.crea=min(ceiling_date(account_created_at,"days")),
+            Min.Post=min(ceiling_date(created_at,"days")),
+            Max.Post=max(ceiling_date(created_at,"days")),
+            Min.Stat=min(statuses_count),
+            Max.Stat=max(statuses_count),
+            Age=round(as.double(difftime(Max.Post,Date.crea,units = "weeks"))/52,digits = 2),
+            Moy.Fol=Max.Fol/Age,
+            Moy.Fri=Max.Fri/Age,
+            Moy.Stat=Max.Stat/Age,
+            Moy.Fol.Stat=Max.Fol/Max.Stat)
+```
+
+### Les nombres de publications, d'abonnés et d'abonnements
+
+On visualise le nombre d'abonnés, d'abonnements et de publications pour
+chaque marque étudiée, ainsi que les ratios moyens par année.
+
+On peut émettre l'hypothèse que les marques ayant adopté la plateforme
+il y a plus longtemps aient des totaux plus importants : un effet
+naturel de la longévité de l'usage de la plateforme.
+
+```{r 4}
+### On calcule les nombres de followers totaux et par année
+gg1 <- ggplot(foo_synth,aes(Max.Fol,reorder(Marque,Max.Fol),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Nombre d'abonnés") + theme(legend.position = "none")
+gg2 <- ggplot(foo_synth,aes(Moy.Fol,reorder(Marque,Moy.Fol),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Abonnés par année") + theme(legend.position = "none")
+
+### On calcule les nombres de publications totales et par année
+gg3 <- ggplot(foo_synth,aes(Max.Stat,reorder(Marque,Max.Stat),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Nombre de publications") + theme(legend.position = "none")
+gg4 <- ggplot(foo_synth,aes(Moy.Stat,reorder(Marque,Moy.Stat),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Publications par année") + theme(legend.position = "none")
+
+gg5 <- ggplot(foo_synth,aes(Max.Fri,reorder(Marque,Max.Fri),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Nombre d'abonnements") + theme(legend.position = "none")
+gg6 <- ggplot(foo_synth,aes(Moy.Fri,reorder(Marque,Moy.Fri),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Abonnements par année") + theme(legend.position = "none")
+plot_grid(gg1,gg2,gg3,gg4,gg5,gg6, ncol = 2,nrow = 3)
+```
+
+```{r 5}
+df_tweets_mrq$Date <- ceiling_date(df_tweets_mrq$created_at,"weeks")
+foo <- df_tweets_mrq%>%
+  group_by(name,Date)%>%
+  count(name)%>%
+  ungroup()
+
+foo%>%
+  group_by(name)%>%
+  summarise(name=name,Moy=mean(n))%>%
+  unique()%>%
+  ggplot(aes(reorder(name,Moy),Moy,fill=name))+geom_bar(stat = "identity",show.legend = FALSE)+coord_flip()+ xlab("") + ylab("Moyenne hebdomadaire de publications")+ labs(caption = "Source: Données collectées via Rtweet sur Twitter")
+```
+
+### La production des marques par type de publication
+
+Cependant dans cette approche nous ne distinguons pas la nature de cette
+production. Or un post peut-être de 4 types :
+
+-   Publication (Post)
+
+-   Réponse (Reply)
+
+-   Citation (Quote)
+
+-   Partage (Retweet)
+
+Il est donc intéressant en premier lieu de proposer une répartition des
+volumes produits par chacune des marques selon la nature de leur
+production afin d'observer si des différences de répartition existent au
+sein de leur communication.
+
+```{r 6}
+#Répartition
+foo_df_pie <- data.frame()
+vect_name <- levels(as.factor(df_tweets_mrq$name))
+
+for (val in vect_name) {
+  foo_df <- data.frame()
+foo <- df_tweets_mrq%>%
+  filter(name==val)
+  Total<-nrow(foo)
+  
+foo <- df_tweets_mrq%>%
+  filter(is.na(reply_to_screen_name))%>%
+  filter(name==val,is_retweet=="FALSE",is_quote=="FALSE")
+  Organiques<-nrow(foo)
+  Organiques <- t(Organiques)
+  Organiques <- as.data.frame(Organiques)
+  rownames(Organiques)<-"Organiques"
+  foo_df<- bind_rows(foo_df,Organiques)
+  
+foo <- df_tweets_mrq%>%
+  filter(name==val,is_retweet=="TRUE",is_quote=="FALSE")
+  Retweets<-nrow(foo)
+  Retweets <- t(Retweets)
+  Retweets <- as.data.frame(Retweets)
+  rownames(Retweets)<-"Retweets"
+  foo_df<- bind_rows(foo_df,Retweets)
+  
+foo <- df_tweets_mrq%>%
+  filter(is.na(reply_to_screen_name))%>%
+  filter(name==val,is_retweet=="FALSE",is_quote=="TRUE")
+  Quotes<-nrow(foo)
+  Quotes <- t(Quotes)
+  Quotes <- as.data.frame(Quotes)
+  rownames(Quotes)<-"Quotes"
+  foo_df<- bind_rows(foo_df,Quotes)
+  
+  foo <- df_tweets_mrq%>%
+  filter(name==val,!is.na(reply_to_screen_name),is_quote!="TRUE")%>%filter(reply_to_screen_name!=val)
+  Replies<-nrow(foo)
+  Replies <- t(Replies)
+  Replies <- as.data.frame(Replies)
+  rownames(Replies)<-"Replies"
+  foo_df<- bind_rows(foo_df,Replies)
+  
+  foo_df$Marque <- val
+  foo_df$Type <- rownames(foo_df)
+  colnames(foo_df)[1] <- "Count"
+  
+  foo_df_pie<-bind_rows(foo_df_pie,foo_df)
+}
+foo_df_pie <- foo_df_pie%>%
+  select(Marque,Type,Count)%>%
+  mutate(Prop=Count/Total)
+
+ggplot(data=foo_df_pie, aes(x="", y = Count, fill=Type))+ 
+  geom_bar(stat='identity', position="fill", color='white')+
+  ggtitle("Répartition par nature de post") + xlab("") + ylab("")+
+  facet_wrap(~Marque)+ 
+  theme_void()
+
+```
+
+```{r 7}
+df_tweets_mrq <- df_tweets_mrq%>%
+  mutate(Type=ifelse(is_retweet=="TRUE","Retweets",
+                     ifelse(is_quote=="TRUE"&is.na(reply_to_screen_name),"Quotes",
+                            ifelse(!is.na(reply_to_screen_name),"Replies","Organiques"))))%>%
+  mutate(dte = year(created_at),
+         Marque = paste0(name,dte))
+
+foo <- df_tweets_mrq%>%
+  filter(Type=="Organiques")%>%
+  select(name,Marque,dte,Date,favorite_count,retweet_count)
+
+
+#for(val in vect_name){
+#  ggo<-foo%>%
+#  filter(name==val)%>%
+#  ggplot(aes(Date,favorite_count))+geom_point()+geom_smooth(method = lm,se=TRUE,size=0.1)+ylim(0,200)+ggtitle(val)
+#  print(ggo)
+#}
+
+ggplot(foo,aes(Date,favorite_count))+geom_point()+geom_smooth(method = lm,se=TRUE,size=0.1)+ylim(0,200)+ggtitle("Répartition des likes pour les tweets organiques")+facet_wrap(~name)
+```
+
+
+```{r 8}
+
+ggplot(foo,aes(Date,retweet_count))+geom_point()+geom_smooth(method = lm,se=TRUE,size=0.1)+ylim(0,75)+ggtitle("Répartition des retweets pour les tweets organiques")+facet_wrap(~name)
+
+#for(val in vect_name){
+#  ggo<-foo%>%
+#  filter(name==val)%>%
+#  ggplot(aes(Date,retweet_count))+geom_point()+geom_smooth(method = lm,se=TRUE,size=0.1)+ylim(0,100)+ggtitle(val)
+#  print(ggo)
+#}
+
+
+```
+
+```{r 9}
+foo<-df_tweets_mrq%>%
+  ungroup()%>%
+  filter(Type=="Organiques")
+
+foo_ <- textstat_readability(foo$Text_clean, measure = c("Flesch","meanSentenceLength", "meanWordSyllables"),min_sentence_length = 2,max_sentence_length = 1000)
+
+foo<-cbind(foo,foo_[,2:4])
+
+foo1<-foo %>% 
+  group_by(name) %>%
+  summarise(Flesch=mean(Flesch, na.rm=TRUE), 
+            SentenceLength= mean(meanSentenceLength, na.rm=TRUE),
+            WordSyllables= mean(meanWordSyllables, na.rm=TRUE))%>%
+   gather(variable, value, -name)%>%
+  rename(Indicateur="variable")
+
+gg1 <- ggplot(foo1,aes(x=name, y=value, group=Indicateur))+
+  geom_line(size=1.2, aes(color=Indicateur), stat="identity")+
+  facet_wrap(vars(Indicateur), scale="free", ncol=1)+
+  labs(title = "Evolution de la lisibilité des tweets", x=NULL, y=NULL)+theme(axis.text.x=element_text(angle=15,hjust=0.2,size = 5))
+
+
+foo_<-tokens(foo$text)%>%
+  textstat_lexdiv(foo$Text_clean, measure = c("CTTR", "Maas"),  log.base = 10,
+                  remove_numbers = TRUE,  
+                  remove_punct = TRUE,  
+                  remove_symbols = TRUE,
+                  remove_hyphens = TRUE)
+
+foo<-cbind(foo,foo_[,2:3])
+
+foo1<-foo %>% 
+  group_by(name) %>%
+  summarise(CTTR=mean(CTTR, na.rm=TRUE), 
+            Maas=mean(Maas, na.rm=TRUE)) %>%
+  gather(variable, value, -name)%>%
+  rename(Indicateur="variable")
+
+gg2 <- ggplot(foo1,aes(x=name, y=value, group=Indicateur))+
+  geom_line(size=1.2, aes(color=Indicateur), stat="identity")+
+  facet_wrap(vars(Indicateur), scale="free", ncol=1)+
+  labs(title = "Diversité lexicale des tweets", x=NULL, y=NULL)+theme(axis.text.x=element_text(angle=15,hjust=0.2,size = 5))
+
+ggarrange(gg1, gg2,ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+```
+
+```{r 10,include=FALSE}
+library(RSentiment)
+
+vect_rep_org <- c("Organiques")
+df_annot <- df_tweets_mrq%>%
+  filter(Type %in%vect_rep_org)
+df_annot$Text_clean<-tolower(df_annot$Text_clean)
+
+
+foo <- calculate_sentiment(df_annot$text)
+df_annot$Sentiment <- foo$sentiment
+```
+
+```{r 100}
+df_annot%>%
+  select(name,Sentiment)%>%
+  count(Sentiment)%>%
+  ggplot(aes(x="", y = n, fill=Sentiment))+ 
+    geom_bar(stat='identity', position="fill", color='white')+
+    ggtitle("Répartition des sentiments des tweets primaires") + xlab("") + ylab("")+
+    facet_wrap(~name)+ 
+    theme_void()
+
+```
+
+```{r 11}
+
+foo <- df_tweets_mrq%>%
+  filter(Type=="Organiques")%>%
+  select(name,text,hashtags)%>%
+  unnest(hashtags)%>%
+  group_by(name,hashtags)%>%
+  count()%>%
+  arrange(desc(n))
+foo[is.na(foo)]="No_#"
+
+for (val in vect_name) {
+  foo_ <- foo%>%
+    filter(name==val)%>%
+    arrange(desc(n))%>%
+    head(30)
+gg_foo <- ggplot(foo_,aes(reorder(hashtags,n),n))+geom_bar(stat = "identity")+coord_flip()+facet_grid(rows = vars(name))+xlab("Hashtags")+ylab("Compte")+ labs(color="Marque",caption = "Source: Données collectées via Rtweet sur Twitter")+theme_minimal()
+  print(gg_foo)
+}
+
+```
+
+
+```{r 12,include=FALSE}
+
+#Factorisation des catégories du tableau excel chargé
+vect_cat <- as.factor(dict_brut$`Facteur Ocean`)
+##Lecture des niveaux des catégories
+vect_cat <- levels(vect_cat)
+##Création d'un vecteur libre pour création dictionnaire
+dict_net_light <- c()
+
+
+df_toks <- data.frame()
+
+df_foo <- df_tweets_mrq%>%
+  group_by(name,status_id,Text_clean)%>%
+  filter(Type=="Organiques")%>%
+  mutate(Text_cleanTok =Text_clean)%>%
+  unnest_tokens(Toks,Text_cleanTok)
+#table(str_detect(df_foo$Toks,"ambi"))
+
+
+for (val in vect_cat) {
+  foo <- dict_brut%>%filter(`Facteur Ocean`==val)
+  list_regex_ocean <- foo$Regex_detec
+  list_regex_ocean <- paste0("\\b",list_regex_ocean,"\\b", collapse="|")
+  foo <- df_foo
+  foo$Presence <- str_detect(foo$Toks,list_regex_ocean)
+  foo<-foo%>%
+    filter(Presence=="TRUE")
+  print(foo)
+  df_toks<-rbind(df_toks,foo)
+  }
+
+##suppression des adverbes
+library(SnowballC)
+df_toks<-df_toks%>%
+  mutate(ADV=str_detect(Toks,"ement"))%>%
+  filter(ADV=="FALSE")%>%
+  mutate(Stem=wordStem(Toks))
+
+vect_stem <- levels(as.factor(df_toks$Stem))
+vect_stem <- paste0("\\b",vect_stem, collapse="|")
+
+dict_brt<-dict_brut%>%
+  mutate(OCEAN=str_detect(`Français ( lemme) ( Première lettre minuscule)`,vect_stem))%>%
+  filter(OCEAN=="TRUE")
+
+#Création du dictionnaire
+for (val in vect_cat) {
+  foo <- dict_brt%>%filter(`Facteur Ocean`==val)
+  a <- foo$Regex_lda
+  dict_net_light[[val]] <- a
+  }
+dict_net_light <- dictionary(dict_net_light)
+```
+
+```{r 13}
+
+###déja téléchargée df_trt_annot
+#udpipe_download_model("french")
+udmodel <- udpipe_load_model("french-gsd-ud-2.5-191206.udpipe")
+
+annot_ud <- udpipe_annotate(udmodel,df_annot$Text_clean, doc_id = df_annot$status_id)
+
+annot_ud <- as.data.frame(annot_ud)
+
+names(annot_ud)[names(annot_ud) == "doc_id"] <- "status_id"
+
+df_trt_annot <- left_join(annot_ud,df_annot)
+
+#saveRDS(df_trt_annot,"Annotation_220125.rds")
+
+df_trt_adj <- df_trt_annot%>%
+  filter(upos=="ADJ")%>%
+  mutate(Nbcar=nchar(lemma),Mention=str_detect(lemma,"\\@"))%>%
+  filter(Nbcar>2,Mention=="FALSE")
+```
+
+```{r 17_lda_lemma_dict_full}
+library(seededlda)
+library(flextable)
+facto_mrq <- data.frame()
+
+foo <- df_trt_adj%>%
+  group_by(name,lemma)%>%
+  count()%>%
+  select(name,lemma)
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+fooo <- foo %>%
+  group_by(name)%>%
+  mutate(name=strsplit(name," ")[[1]][1])%>%
+  ungroup()
+
+foo <- dfm(fooo$lemma,remove_padding = TRUE,tolower = TRUE)
+docvars(foo,"Marque")<-fooo$name
+
+
+lda <- textmodel_seededlda(
+  foo,
+  dict_net,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  alpha = NULL,
+  beta = NULL)
+
+foo <- terms(lda,n=20)
+foo <- as.data.frame(foo)
+foo<-foo%>%select(1:11)
+#print(kable(foo, caption = "Adjectifs des Marques"))
+foo <- as.data.frame(foo)
+print(foo)
+```
+
+
+```{r 18}
+
+ld <- as.data.frame(lda$data@docvars)
+lt <- as.data.frame(lda$theta)
+
+lt$docname_ <- rownames(lt)
+
+data <- inner_join(ld,lt,by="docname_")
+data<- data[4:14]
+
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==1)
+
+gg1 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=Scores_mn - Score_sd,ymax=Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==0)
+
+gg1 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=-Scores_mn - Score_sd,ymax=-Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+
+```
+
+```{r 19}
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  group_by(Marque,facteurs)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE))%>%
+  pivot_wider(names_from = "facteurs",values_from = "Scores_mn")
+
+library(FactoMineR)
+library(factoextra)
+
+data_pca <- PCA(df[,2:11])
+
+fgg <- fviz_pca_biplot(data_pca, repel = TRUE,
+                col.var = "#2E9FDF", # Couleur des variables
+                col.ind = "#696969",
+                label = "var"
+                )
+lab <- as.data.frame(data_pca$ind$coord)
+lab$Marque <- df$Marque
+#explor::explor(data_pca)
+fgg+
+  geom_text(data = lab, aes(x = Dim.1, y = Dim.2, label = Marque), hjust = -.1, vjust =-.1)
+  
+```
+
+
+```{r 23_lda_lemma_dict_light}
+library(seededlda)
+library(flextable)
+facto_mrq <- data.frame()
+
+foo <- df_trt_adj%>%
+  group_by(name,lemma)%>%
+  count()%>%
+  select(name,lemma)
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+fooo <- foo %>%
+  group_by(name)%>%
+  mutate(name=strsplit(name," ")[[1]][1])%>%
+  ungroup()
+
+foo <- dfm(fooo$lemma,remove_padding = TRUE,tolower = TRUE)
+docvars(foo,"Marque")<-fooo$name
+
+
+lda <- textmodel_seededlda(
+  foo,
+  dict_net_light,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  alpha = NULL,
+  beta = NULL)
+
+foo <- terms(lda,n=20)
+foo <- as.data.frame(foo)
+foo<-foo%>%select(1:11)
+#print(kable(foo, caption = "Adjectifs des Marques"))
+foo <- as.data.frame(foo)
+print(foo)
+
+```
+
+
+```{r 24}
+
+ld <- as.data.frame(lda$data@docvars)
+lt <- as.data.frame(lda$theta)
+
+lt$docname_ <- rownames(lt)
+
+data <- inner_join(ld,lt,by="docname_")
+data<- data[4:14]
+
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==1)
+
+gg1 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=Scores_mn - Score_sd,ymax=Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==0)
+
+gg1 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=-Scores_mn - Score_sd,ymax=-Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+
+```
+
+```{r 25}
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  group_by(Marque,facteurs)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE))%>%
+  pivot_wider(names_from = "facteurs",values_from = "Scores_mn")
+
+library(FactoMineR)
+library(factoextra)
+
+data_pca <- PCA(df[,2:11])
+
+fgg <- fviz_pca_biplot(data_pca, repel = TRUE,
+                col.var = "#2E9FDF", # Couleur des variables
+                col.ind = "#696969",
+                label = "var"
+                )
+lab <- as.data.frame(data_pca$ind$coord)
+lab$Marque <- df$Marque
+#explor::explor(data_pca)
+fgg+
+  geom_text(data = lab, aes(x = Dim.1, y = Dim.2, label = Marque), hjust = -.1, vjust =-.1)
+  
+
+```
+
+
+  
+```{r 20}
+library(seededlda)
+library(flextable)
+facto_mrq <- data.frame()
+
+vect_pca <- c("Hyundai","Peugeot")
+
+foo <- df_trt_adj%>%
+  filter(name%in%vect_pca)%>%
+  group_by(Marque,Text_clean)%>%
+  count()%>%
+  select(Marque,Text_clean)
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+
+fooo <- foo %>%
+  group_by(Marque)%>%
+  mutate(name=strsplit(Marque," ")[[1]][1])%>%
+  ungroup()
+
+toks <- tokens(foo$Text_clean)
+docvars(toks,"Marque")<-fooo$name
+
+toks <- tokens_remove(toks, stopwords('french'), valuetype = 'fixed', padding = TRUE)
+
+foo <- dfm(toks,remove_padding = TRUE,tolower = TRUE)
+
+
+lda <- textmodel_seededlda(
+  foo,
+  dict_net_light,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  alpha = NULL,
+  beta = NULL)
+
+foo <- terms(lda,n=20)
+foo <- as.data.frame(foo)
+foo<-foo%>%select(1:11)
+#print(kable(foo, caption = "Adjectifs des Marques"))
+foo <- as.data.frame(foo)
+print(foo)
+```
+
+```{r 21}
+
+ld <- as.data.frame(lda$data@docvars)
+lt <- as.data.frame(lda$theta)
+
+lt$docname_ <- rownames(lt)
+
+data <- inner_join(ld,lt,by="docname_")
+data<- data[4:14]
+
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==1)
+
+gg1 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=Scores_mn - Score_sd,ymax=Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==0)
+
+gg1 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=-Scores_mn - Score_sd,ymax=-Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(df,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+
+```
+
+```{r 22}
+df <- data%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  group_by(Marque,facteurs)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE))%>%
+  pivot_wider(names_from = "facteurs",values_from = "Scores_mn")
+
+library(FactoMineR)
+library(factoextra)
+
+data_pca <- PCA(df[,2:11])
+
+fgg <- fviz_pca_biplot(data_pca, repel = TRUE,
+                col.var = "#2E9FDF", # Couleur des variables
+                col.ind = "#696969",
+                label = "var"
+                )
+lab <- as.data.frame(data_pca$ind$coord)
+lab$Marque <- df$Marque
+#explor::explor(data_pca)
+fgg+
+  geom_text(data = lab, aes(x = Dim.1, y = Dim.2, label = Marque), hjust = -.1, vjust =-.1)
+  
+```

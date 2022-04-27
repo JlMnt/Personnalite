@@ -1,0 +1,101 @@
+---
+title: "Requêtes Automobiles"
+author: "Julien Monnot"
+date: "30/01/2022"
+output: html_document
+---
+
+
+```{r extraire_les_tweets_officiels}
+library(rtweet)
+library(dplyr)
+date <- Sys.Date()
+vect_requete <- c("renault_fr","Porsche_France","PeugeotFR","CitroenFrance","MBFRANCE_","AudiFrance","FordFrance","vw_france","ToyotaFrance","nissanfrance","HyundaiFrance")
+
+for (val in vect_requete) {
+  foo <- get_timeline(val,n=5000)%>%
+    mutate(Date.Extract=date)
+  saveRDS(foo,paste(date,val,"tweets",".rds"))
+}
+
+
+```
+
+
+```{r tweets_reply_quote_context_diff}
+library(stringr)
+date <- Sys.Date()
+
+for (val in vect_requete) {
+  foo <- search_tweets(val,lang="fr",n=200000,retryonratelimit = TRUE)%>%mutate(Marque=val,Date.Extract=date)
+  
+  foo <- foo%>%filter(is_retweet=="FALSE")
+  df_net <- unique(foo)
+  
+
+  #Nettoyage du text
+  foo <- df_net$text
+  
+  #Retrait des mentions
+  foo <- gsub("@\\w+","",foo)
+  
+  #Retrait des #
+  foo <- gsub('#\\w+',"",foo)
+  
+  #Retrait des émojis
+  foo <- str_remove_all(string = foo, pattern = '[:emoji:]')
+  
+  #Retrait des sauts de lignes
+  foo <- gsub('\n',"",foo)
+  
+  #Retrait des URL
+  foo <- gsub('http\\S+\\s*',"",foo)
+  
+  #Retrait des nombres
+  foo <- gsub('\\d',"",foo)
+  
+  #Retrait des amp
+  foo <- gsub('&amp;',"",foo)
+  
+  #Retrait de la ponctuation
+  foo <- gsub('[[:punct:]]'," ",foo)
+  
+  #Retrait des lettres seules
+  foo <- gsub('\\W*\\b\\w\\b\\W*'," ",foo)
+  
+  #Retrait des espaces
+  foo <- gsub('\\s+$',"",foo)
+  
+  #Retrait des espaces
+  foo <- gsub('^\\s+',"",foo)
+  
+  #récupération du texte nettoyé
+  df_net$text_clean <- foo
+  
+  #On extrait les messages produit >1, on crée un vecteur, on filtre la base, svg
+  vect_message_diff <- df_net%>%
+    count(text_clean)%>%
+    arrange(desc(n))%>%
+    filter(n>1)
+  vect_message_diff <- vect_message_diff$text_clean
+  foo1 <- df_net%>%filter(text_clean%in%vect_message_diff)
+  foo1%>%
+    count(screen_name)%>%
+    arrange(desc(n))
+  saveRDS(foo1,paste(date,"_df_twt_parasites",val,".rds"))
+  
+  #On extrait les messages produit ==1, on crée un vecteur, on filtre la base, svg
+  vect_message_diff <- df_net%>%
+    count(text_clean)%>%
+    arrange(desc(n))%>%
+    filter(n==1)
+  vect_message_diff <- vect_message_diff$text_clean
+  foo2 <- df_net%>%filter(text_clean%in%vect_message_diff)
+  saveRDS(foo2,paste(date,"_df_twt_context",val,".rds"))
+
+  foo <- df_net%>%filter(reply_to_screen_name==val)
+  saveRDS(foo,paste(date,"_reply_",val,".rds"))
+}
+
+
+```

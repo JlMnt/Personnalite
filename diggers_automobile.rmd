@@ -1,0 +1,1826 @@
+---
+title: "digger_marques"
+author: "Julien Monnot"
+date: "15/01/2022"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# La personnalité de marque sur Twitter : Etude de cas sur 11 comptes français du secteur de l'automobile
+
+L'étude se déroule en deux temps : on se concentre sur les tweets émis
+par les comptes offciels français des marques elles-mêmes, avant de se
+concentrer sur les réponses des utilisateurs à leurs posts. Nous nous
+focalisons sur 11 marques que sont :
+
+-   Renault
+
+-   Peugeot
+
+-   Citroën
+
+-   Audi
+
+-   Volkswagen
+
+-   Porsche
+
+-   Ford
+
+-   Mercedez-Benz
+
+-   Nissan
+
+-   Toyota
+
+-   Hyundai
+
+On charge les ressources : packages et dictionnaire de personnalité.
+
+```{r timeline_Marque}
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+library(rtweet)
+library(dplyr)
+library(stringr)
+library(igraph)
+library(ggplot2)
+library(ggmap)
+library(lubridate)
+library(tidyverse)
+library(forestmangr)
+library(scales)
+library(udpipe)
+library(tidytext)
+library(textdata)
+library(syuzhet)
+library(lattice)
+library(quanteda)
+library(quanteda.textstats)
+library(cowplot)
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+library(ggridges)
+library(knitr)
+library(ggpubr)
+date <- Sys.Date()
+
+#Création des vecteurs pour les tris
+senti_pol <- c("positive","negative")
+senti_emo <-c("anger","anticipation","disgust","fear","joy","surprise","sadness","trust")
+senti_bad <- c("anger","disgust","fear","sadness")
+senti_plu <-c("anticipation","joy","surprise","trust")
+
+#lecture du dictionnaire
+dict_brut <- readxl::read_excel("adjectifs de marque.xlsx")
+
+#Factorisation des catégories du tableau excel chargé
+vect_cat <- as.factor(dict_brut$`Facteur Ocean`)
+##Lecture des niveaux des catégories
+vect_cat <- levels(vect_cat)
+##Création d'un vecteur libre pour création dictionnaire
+dict_net <- c()
+
+#Création du dictionnaire
+for (val in vect_cat) {
+  foo <- dict_brut%>%filter(`Facteur Ocean`==val)
+  a <- foo$Regex_detec
+  dict_net[[val]] <- a
+  }
+dict_net <- dictionary(dict_net)
+
+```
+
+On crée une boucle afin de lire successivement les bases de données des
+timelines de chacune des marques.
+
+```{r reader_base_tweets_marque}
+#On crée un vecteur réunissant les noms des tweets des marques requêtées
+data <- (Sys.glob("*.rds"))
+data <- as.data.frame(data)%>%
+  filter(str_detect(data,"tweets"))%>%
+  as.list(data)%>%
+  unlist()
+
+list_df <- lapply(data, function(x) readRDS(x))
+
+#Bind
+df_tweets_mrq <- bind_rows(list_df)
+
+
+#Unique test
+doublons <- which(duplicated(df_tweets_mrq$status_id))
+df_tweets_mrq <- df_tweets_mrq[-doublons,]
+
+#df_tweets_mrq <- df_tweets_mrq%>%filter(is_retweet=="FALSE")
+
+df_tweets_mrq <- df_tweets_mrq %>%
+  filter(lang=="fr")%>%
+  group_by(name)%>%
+  mutate(name=strsplit(name," ")[[1]][1])
+
+#Retrait des @,url,sauts de lignes, espaces
+foo <- df_tweets_mrq$text
+
+  #Retrait des mentions
+  foo <- gsub("@\\w+","",foo)
+  
+  #Retrait des #
+  foo <- gsub('#\\w+',"",foo)
+  
+  #Retrait des émojis
+  foo <- str_remove_all(string = foo, pattern = '[:emoji:]')
+  
+  #Retrait des sauts de lignes
+  foo <- gsub('\n',"",foo)
+  
+  #Retrait des URL
+  foo <- gsub('http\\S+\\s*',"",foo)
+  
+  #Retrait des nombres
+  foo <- gsub('\\d',"",foo)
+  
+  #Retrait des amp
+  foo <- gsub('&amp;',"",foo)
+  
+  #Retrait de la ponctuation
+  foo <- gsub('[[:punct:]]'," ",foo)
+  
+  #Retrait des lettres seules
+  foo <- gsub('\\W*\\b\\w\\b\\W*'," ",foo)
+  
+  #Retrait des espaces
+  foo <- gsub('\\s+$',"",foo)
+  
+  #Retrait des espaces
+  foo <- gsub('^\\s+',"",foo)
+df_tweets_mrq$Text_clean <- foo
+
+
+```
+
+## Comparer quelques indicateurs des pages officielles
+
+La fonction utilisée pour extraire les tweets des comptes officiels
+français se concentre sur les 3250 derniers tweets émis par la marque.
+Des extractions successives hebdomadaires permettent de suivre les
+productions respectives.
+
+On se concentre pour la suite de l'analyse sur :
+
+-   La longévité sur la plateforme
+
+-   Les nombres de publications, d'abonnés et d'abonnements
+
+-   La production par type de publication
+
+-   Le nombre d'abonné moyen par publication
+
+```{r 001}
+#Identifier les comptes
+foo_synth <- df_tweets_mrq%>%
+  group_by(name)%>%
+  select(name,followers_count,friends_count,account_created_at,created_at,statuses_count)%>%
+  rename(Marque=name)%>%
+  summarise(Min.Fol=min(followers_count),
+            Max.Fol=max(followers_count),
+            Min.Fri=min(friends_count),
+            Max.Fri=max(friends_count),
+            Date.crea=min(ceiling_date(account_created_at,"days")),
+            Min.Post=min(ceiling_date(created_at,"days")),
+            Max.Post=max(ceiling_date(created_at,"days")),
+            Min.Stat=min(statuses_count),
+            Max.Stat=max(statuses_count),
+            Age=round(as.double(difftime(Max.Post,Date.crea,units = "weeks"))/52,digits = 2),
+            Moy.Fol=Max.Fol/Age,
+            Moy.Fri=Max.Fri/Age,
+            Moy.Stat=Max.Stat/Age,
+            Moy.Fol.Stat=Max.Fol/Max.Stat)
+
+```
+
+### La longévité sur la plateforme
+
+On visualise les marques selon leur longévité sur la plateforme afin de
+voir l'adoption de ce support dans les stratégies de communication.
+Quatre groupes émergent :
+
+-   Plus de 10 ans : Audi, Renault, Ford, Citroën
+
+-   Près de 10 ans : Hyundai, Volkswagen et Nissan
+
+-   Près de 7,5 ans : Toyota et Peugeot
+
+-   Près de 5 ans : Porsche et Mercedes-Benz
+
+```{r 002}
+ggplot(foo_synth,aes(Age,reorder(Marque,Age),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("") + theme(legend.position = "none") + coord_polar("y",start = 0)
+```
+
+### Les nombres de publications, d'abonnés et d'abonnements
+
+On visualise le nombre d'abonnés, d'abonnements et de publications pour
+chaque marque étudiée, ainsi que les ratios moyens par année.
+
+On peut émettre l'hypothèse que les marques ayant adopté la plateforme
+il y a plus longtemps aient des totaux plus importants : un effet
+naturel de la longévité de l'usage de la plateforme.
+
+```{r 003}
+### On calcule les nombres de followers totaux et par année
+gg1 <- ggplot(foo_synth,aes(Max.Fol,reorder(Marque,Max.Fol),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Nombre d'abonnés") + theme(legend.position = "none")
+gg2 <- ggplot(foo_synth,aes(Moy.Fol,reorder(Marque,Moy.Fol),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Abonnés par année") + theme(legend.position = "none")
+
+### On calcule les nombres de publications totales et par année
+gg3 <- ggplot(foo_synth,aes(Max.Stat,reorder(Marque,Max.Stat),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Nombre de publications") + theme(legend.position = "none")
+gg4 <- ggplot(foo_synth,aes(Moy.Stat,reorder(Marque,Moy.Stat),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Publications par année") + theme(legend.position = "none")
+
+gg5 <- ggplot(foo_synth,aes(Max.Fri,reorder(Marque,Max.Fri),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Nombre d'abonnements") + theme(legend.position = "none")
+gg6 <- ggplot(foo_synth,aes(Moy.Fri,reorder(Marque,Moy.Fri),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Abonnements par année") + theme(legend.position = "none")
+plot_grid(gg1,gg2,gg3,gg4,gg5,gg6, ncol = 2,nrow = 3)
+```
+
+Si l'on regarde les scores et les moyennes des abonnés, la longévité ne
+semble pas générer mécaniquement plus d'adhésion :
+
+-   Volkswagen & Peugeot ne sont pas les marques les plus anciennes sur
+    le réseau social : elles se positionnent en 6ème et 8ème position en
+    terme de longévité, mais sont en 1ère et 4ème position en terme
+    d'abonnés.
+
+-   Renault, Citroën et Audi semblent capitaliser sur cet effet naturel
+    de longévité d'usage : 2ème, 4ème et 1ère en terme de longévité,
+    elles se positionnent 2ème, 3ème et 5ème en terme d'abonnés
+    respectivement.
+
+-   Ford cumule peu d'abonnés au regard de sa longévité : 3ème marque en
+    termes de durée d'usage sur la plateforme, elle se positionne 7ème
+    en terme d'abonnés.
+
+Si la durée d'usage n'explique pas à elle seule l'augmentation
+d'abonnés, on peut alors se demander si un plus gros volume de
+publications n'entraîne pas un plus grand nombre d'abonnés. On remarque
+alors concernant les publications :
+
+-   Peugeot arrive à acquérir un nombre d'abonnés important en publiant
+    peu, comparativement à Volkswagen.
+
+-   Citroën ne semble pas, malgré une stratégie de communication
+    importante, réussir à augmenter sensiblement son nombre d'abonnés, à
+    l'image de Nissan ou de Hyundaï, dans une moindre mesure.
+
+L'action pour une page officielle de s'abonner est un moyen de veille
+sectorielle où concurrentielle.
+
+L'action d'abonnement pour une marque traduit une dimension plus
+"passive" de recherche d'information", quand celle de publier traduit
+plus une dimension active "de faire savoir". Les forts abonnements de
+Ford et Hyundai comparés à Peugeot ou Volkswagen témoignent d'un usage
+plus "d'écoute" du réseau que d'un usage plus réellement communicatif de
+ce dernier.
+
+Ces deux premières hypothèses autour de la longévité et du volume de
+publications ne se vérifient pas : Ford, bien qu'assez agée sur la
+plateforme ne cumule pas le plus d'abonnés et Citroën bien que publiant
+le plus, n'est pas la marque la plus suivie. Des différences dans cette
+production peuvent donc expliquer plus amplement les dynamiques
+d'adhésion observées.
+
+On cherche ici à décrire les marques sur la plateforme en se concentrant
+sur leur timeline : les 3250 tweets les plus récents.
+
+```{r 004}
+
+df_tweets_mrq$Date <- ceiling_date(df_tweets_mrq$created_at,"weeks")
+foo <- df_tweets_mrq%>%
+  group_by(name,Date)%>%
+  count(name)%>%
+  ungroup()
+
+ggplot(foo,aes(Date,n,color=name))+geom_line(show.legend = FALSE)+facet_grid(rows = vars(name))+ ggtitle("Nombre de posts hebdomadaires") + xlab("Année de publication") + ylab("") + labs(caption = "Source: Données collectées via Rtweet sur Twitter")+ guides(fill=guide_legend(title="Marque"))+ylim(0,80)+theme_minimal()# geom_smooth(method=lm , color="lightblue", se=TRUE,size=0.1)
+
+```
+
+Ici, les courbes représentent l'ensemble des tweets récoltés sans tenir
+compte de leur nature. Audi et Citroën sont les marques ayant le plus
+produit récemment : leur 3250 derniers tweets remontent jusqu'à 2019,
+tandis que pour les autres marques, les productions remontent jusqu'à
+2017, voir 2016 pour Hyundaï. La donnée non représentée est celle de
+décembre 2017 pour Volkswagen, concernant un jeu concours.
+
+La production des marques est comprise généralement entre 0 et 80
+publications hebdomadaires. On calcule les moyennes :
+
+```{r 005}
+foo%>%
+  group_by(name)%>%
+  summarise(name=name,Moy=mean(n))%>%
+  unique()%>%
+  ggplot(aes(reorder(name,Moy),Moy,fill=name))+geom_bar(stat = "identity",show.legend = FALSE)+coord_flip()+ xlab("") + ylab("Moyenne hebdomadaire de publications")+ labs(caption = "Source: Données collectées via Rtweet sur Twitter")
+```
+
+Citroën et Audi sont les marques les plus actives sur le réseau : elles publient en moyenne 2 fois plus que Porsche.
+
+
+### La production des marques par type de publication
+
+Cependant dans cette approche nous ne distinguons pas la nature de cette
+production. Or un post peut-être de 4 types :
+
+-   Publication (Post)
+
+-   Réponse (Reply)
+
+-   Citation (Quote)
+
+-   Partage (Retweet)
+
+Il est donc intéressant en premier lieu de proposer une répartition des
+volumes produits par chacune des marques selon la nature de leur
+production afin d'observer si des différences de répartition existent au
+sein de leur communication.
+
+```{r 006}
+#Répartition
+foo_df_pie <- data.frame()
+vect_name <- levels(as.factor(df_tweets_mrq$name))
+
+for (val in vect_name) {
+  foo_df <- data.frame()
+foo <- df_tweets_mrq%>%
+  filter(name==val)
+  Total<-nrow(foo)
+  
+foo <- df_tweets_mrq%>%
+  filter(is.na(reply_to_screen_name))%>%
+  filter(name==val,is_retweet=="FALSE",is_quote=="FALSE")
+  Organiques<-nrow(foo)
+  Organiques <- t(Organiques)
+  Organiques <- as.data.frame(Organiques)
+  rownames(Organiques)<-"Organiques"
+  foo_df<- bind_rows(foo_df,Organiques)
+  
+foo <- df_tweets_mrq%>%
+  filter(name==val,is_retweet=="TRUE",is_quote=="FALSE")
+  Retweets<-nrow(foo)
+  Retweets <- t(Retweets)
+  Retweets <- as.data.frame(Retweets)
+  rownames(Retweets)<-"Retweets"
+  foo_df<- bind_rows(foo_df,Retweets)
+  
+foo <- df_tweets_mrq%>%
+  filter(is.na(reply_to_screen_name))%>%
+  filter(name==val,is_retweet=="FALSE",is_quote=="TRUE")
+  Quotes<-nrow(foo)
+  Quotes <- t(Quotes)
+  Quotes <- as.data.frame(Quotes)
+  rownames(Quotes)<-"Quotes"
+  foo_df<- bind_rows(foo_df,Quotes)
+  
+  foo <- df_tweets_mrq%>%
+  filter(name==val,!is.na(reply_to_screen_name),is_quote!="TRUE")%>%filter(reply_to_screen_name!=val)
+  Replies<-nrow(foo)
+  Replies <- t(Replies)
+  Replies <- as.data.frame(Replies)
+  rownames(Replies)<-"Replies"
+  foo_df<- bind_rows(foo_df,Replies)
+  
+  foo_df$Marque <- val
+  foo_df$Type <- rownames(foo_df)
+  colnames(foo_df)[1] <- "Count"
+  
+  foo_df_pie<-bind_rows(foo_df_pie,foo_df)
+}
+foo_df_pie <- foo_df_pie%>%
+  select(Marque,Type,Count)%>%
+  mutate(Prop=Count/Total)
+
+ggplot(data=foo_df_pie, aes(x="", y = Count, fill=Type))+ 
+  geom_bar(stat='identity', position="fill", color='white')+
+  ggtitle("Répartition par nature de post") + xlab("") + ylab("")+
+  facet_wrap(~Marque)+
+  theme_void()
+
+```
+
+On voit alors que les marques automobiles n'ont pas les mêmes pratiques
+et usages de Twitter :
+
+Les quotes et les retweets sont largement minoritaires. Twitter semble
+être un outil de communication directe avec les internautes : plus de
+50% des messages produits excepté pour Porsche, Peugeot et Ford, sont
+des réponses.
+
+Mercedez-Benz n'a d'ailleurs jamais utilisé de quotes, et Audi n'a
+jamais retweeté sur la période extraite.
+
+On se propose alors de décomposer la production dans le temps selon leur
+nature. En effet, on peut se demander si les réponses et les tweets
+organiques connaissent les mêmes rythmes de production. Il faut
+également garder en tête qu'une marque peut se répondre à elle même.
+
+```{r 007}
+#vect_rep_org <- c("Replies","Organiques")
+
+df_tweets_mrq <- df_tweets_mrq%>%
+  mutate(Type=ifelse(is_retweet=="TRUE","Retweets",ifelse(is_quote=="TRUE"&is.na(reply_to_screen_name),"Quotes",ifelse(!is.na(reply_to_screen_name),"Replies","Organiques"))))
+
+
+#df_tweets_mrq$Date <- as.Date(format(df_tweets_mrq$created_at,"%d-%m-%y"),format = "%d-%m-%y")
+df_tweets_mrq$Date <- ceiling_date(df_tweets_mrq$created_at,"months")
+
+df_tweets_mrq%>%
+  group_by(Date,name,Type)%>%
+  count()%>%
+  ggplot(aes(x=Date,y=n,color=Type))+geom_line()+ facet_grid(rows = vars(name))+ ggtitle("Posts mensuels par type") + xlab("Etendue de collecte") + ylab("Production") + labs(color="Marque",caption = "Source: Données collectées via Rtweet sur Twitter")+theme_minimal()+ylim(0,80)
+
+```
+
+On observe que les réponses connaissent une évolution marquée par des
+"pics" quand les tweets organiques suivent une courbe plus linéaire.
+
+Ces premiers graphiques décrivent la nature de la production des
+marques qui se partagent principalement entre les tweets organiques et les réponses.
+
+### Le nombre d'abonnés moyens
+
+On se questionne sur ce qui peut influencer ce phénomène
+d'abonnement. Un premier indicateur qui permet d'objectiver ce dernier est
+le nombre moyen d'abonnés acquis par publication.
+
+```{r 008}
+ggplot(foo_synth,aes(Moy.Fol.Stat,reorder(Marque,Moy.Fol.Stat),fill=Marque))+geom_bar(stat = "identity")+ylab(label = "")+xlab("Abonnés par publication") + theme(legend.position = "none")
+```
+
+Peugeot semble alors avoir une performance moyenne plus importante avec
+Renault et Toyota, Porsche et Mercedez-Benz se démarquent aussi. Leur
+communication engendre une adhésion plus importante que pour Nissan,
+Citroën ou Hyundaï.
+
+Cet effet d'adhésion dépend de la visibilité de la marque sur la
+plateforme. Cette visibilité est influencée positivement par deux
+critères :
+
+-   Le nombre de like : Un internaute likant diffuse de manière
+    indirecte la marque dans le sens où si un abonné like, il est
+    possible qu'une de ces relations voit son activité dans son propre
+    fil d'actualités.
+
+-   Le nombre de retweets : Un internaute qui partage le contenu de la
+    marque leur permet de gagner en visibilité de manière directe au
+    sein des différents réseaux individuels.
+
+Ces deux éléments peuvent influencer ce phénomène d'adhésion aux pages
+officielles. On s'intéresse aux performances des publications selon leur
+type en terme de nombre de likes et de retweets.
+
+```{r 009}
+foo <- df_tweets_mrq%>%
+  group_by(name,Marque)%>%
+  filter(Type=="Organiques")%>%
+  select(favorite_count,retweet_count)
+
+foo%>%ggplot(aes(reorder(name,favorite_count),favorite_count,color=name))+geom_boxplot(outlier.alpha = 0.1)+coord_flip()+ theme(legend.position = "none")+ ggtitle("Distribution des likes pour des tweets organiques") + xlab("") + ylab("") + labs(color="name",caption = "")+ylim(0,150)+labs(caption = "Source de données collectées via Rtweets sur Twitter")
+
+foo%>%ggplot(aes(reorder(name,retweet_count),retweet_count,color=name))+geom_boxplot(outlier.alpha = 0.1)+coord_flip()+ theme(legend.position = "none")+ ggtitle("Distribution des Retweets pour des tweets organiques") + xlab("") + ylab("") + labs(color="Type",caption = "Source: Données collectées via Rtweet sur Twitter")+ylim(0,50)
+
+
+```
+
+On observe qu'obtenir un like reste plus aisé qu'un retweet. Trois
+groupes émergent pour le cas des likes :
+
+-   Un groupe où la communauté d'internautes est très engagée :
+    Wolkswagen, Audi, Peugeot & Porsche ont 25% de leur production au
+    delà des 50 likes, 50% de leur production au dessus des 30 likes.
+
+-   Un groupe où la communauté d'internautes est engagée : Renault,
+    Citroën et Mercedes-Benz ont 50% de leur production qui génère plus
+    de 20 likes.
+
+-   Un groupe où la communauté est moins engagée : Hyundaï, Toyota, Ford
+    et Nissan ont plus de 75% de leurs tweets qui génèrent moins de 25
+    likes.
+
+La taille des communautés respectives est à prendre en compte. Les cas
+de Porsche et Renault témoignent que cet effet n'est pas mécanique :
+Renault, bien que dôté d'une communauté plus importante a une étendue
+plus restreinte que Porsche, qui a une communauté d'abonnés moins
+importante.
+
+Pour les retweets, la question est plus mitigée. On observe :
+
+-   Volkswagen et Peugeot ont 25% de leurs tweets produisant 15
+    retweets.
+
+-   Porsche, Citroën et Renault, dont 50% des tweets produisent 5
+    retweets.
+
+Le reste des marques ont plus de 50% de leur production qui génère moins
+de 5 retweets.
+
+On s'intéresse au cas des quotes :
+
+```{r 0010}
+foo <- df_tweets_mrq%>%
+  group_by(name)%>%
+  filter(Type=="Quotes")%>%
+  select(favorite_count,retweet_count)
+
+foo%>%ggplot(aes(reorder(name,favorite_count),favorite_count,color=name))+geom_boxplot(outlier.alpha = 0.1)+coord_flip()+ theme(legend.position = "none")+ ggtitle("Distribution des likes pour des quotes") + xlab("") + ylab("") + labs(color="name",caption = "")+ylim(0,50)+labs(caption = "Source de données collectées via Rtweets sur Twitter")
+
+foo%>%ggplot(aes(reorder(name,retweet_count),retweet_count,color=name))+geom_boxplot(outlier.alpha = 0.1)+coord_flip()+ theme(legend.position = "none")+ ggtitle("Distribution des Retweets pour des quotes") + xlab("") + ylab("") + labs(color="Type",caption = "Source: Données collectées via Rtweet sur Twitter")+ylim(0,20)
+
+```
+
+Pour le cas des quotes, la distinction est plus difficile. On peut
+décrire deux groupes autour du seuil des 20 likes :
+
+-   Renault, Porsche, Citroën et Audi ont 50% de leurs quotes générant
+    plus de 20 likes.
+
+-   Peugeot, Volkswagen Ford, Nissan Toyota et Hyundaï ont 50% de leur
+    production générant moins de 20 likes/
+
+On se penche sur les retweets des retweets et les likes des réponses :
+
+```{r 0011}
+foo <- df_tweets_mrq%>%
+  group_by(name)%>%
+  filter(Type=="Replies")%>%
+  select(favorite_count,retweet_count)
+
+foo%>%ggplot(aes(reorder(name,favorite_count),favorite_count,color=name))+geom_boxplot(outlier.alpha = 0.1)+coord_flip()+ theme(legend.position = "none")+ ggtitle("Distribution des likes pour des replies") + xlab("") + ylab("") + labs(color="name",caption = "")+ylim(0,50)+labs(caption = "Source de données collectées via Rtweets sur Twitter")
+
+foo <- df_tweets_mrq%>%
+  group_by(name)%>%
+  filter(Type=="Retweets")%>%
+  select(favorite_count,retweet_count)
+
+foo%>%ggplot(aes(reorder(name,retweet_count),retweet_count,color=name))+geom_boxplot(outlier.alpha = 0.1)+coord_flip()+ theme(legend.position = "none")+ ggtitle("Distribution des Retweets pour Retweets") + xlab("") + ylab("") + labs(color="Type",caption = "Source: Données collectées via Rtweet sur Twitter")+ylim(0,50)
+
+```
+
+Les réponses génèrent beaucoup moins de likes. Ici, c'est la ventilation
+des valeurs limites qui restent intéressantes : Les réponses les plus
+likés sont souvent des auto-réponses, de la page officielle à elle même,
+où à un confrère/concurrent, où une personnalité/influenceur. Lorsqu'on isole les réponses à l'égard des internautes uniquement, les likes baissent.
+
+Concernant les retweets, Mercedes-Benz, Citroën et Volkswagen n'ont pas
+intégré ce type de production dans leur stratégie de communication.
+Peugeot, semble participer le plus à la diffusion d'informations
+valorisées par sa communauté : les graphiques précédent indiquaient une
+proportion plus faible que Hyundaï, et similaire à Nissan dans son usage
+de ce type de publication, et ici, l'on voit que les contenus que cette
+marque partagés sont de loin les plus rediffusés.
+
+On se propose, après avoir fait l'étude descriptive de la production des
+marques et observé des différences de réaction au sein de leurs
+communautés d'internautes, d'étudier plus en détails le corps de leurs
+publications, afin de voir si des facteurs explicatifs existent au sein
+du texte même pour mieux comprendre ces distincitons.
+
+### Le sentiment des tweets officiels
+
+De manière générale, les émotions positives sont dominantes. On se concentre ici sur les tweets organiques et les réponses aux
+internautes, afin de voir si des différences existent dans l'expression
+des émotions dans ces deux types de production.
+```{r 0012}
+gg1 <- df_tweets_mrq %>%
+  filter(Type=="Organiques")%>%
+  select(name,status_id,Text_clean) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_emo)%>%
+  rename(Emotions="sentiment")%>%
+  ggplot(aes(x="", y = n, fill=Emotions))+ 
+  geom_bar(stat='identity', position="fill", color='white')+
+  ggtitle("Emotions des tweets organiques") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+
+gg2 <- df_tweets_mrq %>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name!=screen_name)%>%
+  select(name,status_id,Text_clean) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_emo)%>%
+  rename(Emotions="sentiment")%>%
+  ggplot(aes(x="", y = n, fill=Emotions))+ 
+  geom_bar(stat='identity', position="fill", color='white',show.legend = FALSE)+
+  ggtitle("Emotions des réponses") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+
+ggarrange(gg1, gg2, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+
+```
+Les communications semblent effectivement différentes selon que l'on publie ou que l'on répond.
+
+```{r 00121}
+gg1 <- df_tweets_mrq %>%
+  filter(Type=="Organiques")%>%
+  select(name,status_id,Text_clean) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_plu)%>%
+  rename(Emotions="sentiment")%>%
+  ggplot(aes(x="", y = n, fill=Emotions))+ 
+  geom_bar(stat='identity', position="fill", color='white')+
+  ggtitle("Emotions positives des tweets organiques") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+
+gg2 <- df_tweets_mrq %>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name!=screen_name)%>%
+  select(name,status_id,Text_clean) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_plu)%>%
+  rename(Emotions="sentiment")%>%
+  ggplot(aes(x="", y = n, fill=Emotions))+ 
+  geom_bar(stat='identity', position="fill", color='white',show.legend = FALSE)+
+  ggtitle("Emotions positives des réponses") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+
+ggarrange(gg1, gg2, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+```
+
+De manière générale, les marques automobiles ont tendance à privilégier la confiance et
+l'anticipation quand elles publient directement, excepté pour Volkswagen
+où la communication utilise plus la surprise. Pour les réponses, on observe une augmentation de la surprise et une diminution de la joie.
+
+Cependant, l'évolution de la répartition des émotions pour les réponses s'observe sur différents modes : 
+
+-   Un mode de renforcement de la communication : Volkswagen, Toyota.
+-   Un mode de sélection de la tonalité de réponse : Renault, Nissan, Porsche et Mercedes-Benz
+-   Un mode de maintien de la communication : Ford et Peugeot
+-   Un mode de réponse par la surprise : Hyundaï, Audi et Citroën
+
+On s'intéresse à la répartition des émotions négatives.
+
+```{r 00122}
+gg1 <- df_tweets_mrq %>%
+  filter(Type=="Organiques")%>%
+  select(name,status_id,Text_clean) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_bad)%>%
+  rename(Emotions="sentiment")%>%
+  ggplot(aes(x="", y = n, fill=Emotions))+ 
+  geom_bar(stat='identity', position="fill", color='white')+
+  ggtitle("Emotions négatives des tweets organiques") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+
+gg2 <- df_tweets_mrq %>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name!=screen_name)%>%
+  select(name,status_id,Text_clean) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_bad)%>%
+  rename(Emotions="sentiment")%>%
+  ggplot(aes(x="", y = n, fill=Emotions))+ 
+  geom_bar(stat='identity', position="fill", color='white',show.legend = FALSE)+
+  ggtitle("Emotions négatives des réponses") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+
+ggarrange(gg1, gg2, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+```
+
+L'expression du dégoût semble être minoritaire dans la production
+organique des marques, la peur est l'émotion que l'on retrouve le plus.
+
+Concernant les réponses, la part de dégoût augmente sensiblement,
+excepté pour Porsche. Les sentiments de peur et tristesse se maintiennent, la colère diminue également, excepté pour Toyota.
+
+On s'intéresse à la polarité du sentiment au sein de la production.
+
+```{r 0013}
+gg1 <- df_tweets_mrq %>%
+  filter(Type==c("Organiques"))%>%
+  select(name,status_id,Text_clean) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_pol)%>%
+  rename(Sentiments="sentiment")%>%
+  ggplot(aes(x="", y = n, fill=Sentiments))+
+  geom_bar(stat='identity', position="fill", color='white')+
+  ggtitle("Sentiments des tweets organiques") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+
+gg2 <- df_tweets_mrq %>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name!=screen_name)%>%
+  select(name,status_id,Text_clean) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_pol)%>%
+  rename(Sentiments="sentiment")%>%
+  ggplot(aes(x="", y = n, fill=Sentiments))+ 
+  geom_bar(stat='identity', position="fill", color='white',show.legend = FALSE)+
+  ggtitle("Sentiments des réponses") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+
+ggarrange(gg1, gg2, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+```
+
+La proportion du sentiment négatif baisse lorsque les marques répondent,
+excepté pour Porsche et Audi.
+
+On s'intéresse à leur ventilation dans le temps. On se propose d'étudier la balance moyenne des émotions : 
+
+-   On somme les émotions négatives et positives et on divise leur score par 4 afin d'obtenir une moyenne.
+-   On soustrait le ratio moyen négatif au ratio moyen positif.
+
+```{r 00131}
+gg1 <- df_tweets_mrq %>%
+  filter(Type=="Organiques")%>%
+  select(name,Date,status_id,Text_clean) %>%
+  group_by(name,Date) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,Date,sentiment)%>%
+    count()%>%
+  filter(sentiment%in%senti_emo)%>%
+  pivot_wider(names_from=sentiment,values_from=n)%>%
+  mutate_all(funs(ifelse(is.na(.), 0, .)))%>%
+  mutate(Bal=((joy+trust+anticipation+surprise)/4)-((anger+disgust+fear+sadness)/4))%>%
+  ggplot(aes(x=Date,y=Bal,color=name))+geom_line(show.legend = FALSE)+ facet_grid(rows = vars(name))+ 
+  ggtitle("Balance des émotions des tweets organiques") + xlab("Etendue de collecte") + 
+  ylab("Production") + labs(color="Marque",caption = "Source: Données collectées via Rtweet sur Twitter")+theme_minimal()+ylim(-1,5)+geom_smooth(method=lm , color="darkblue", se=TRUE,size=0.1)+ geom_line(aes(y = 0), color = "red", linetype = "dotted")
+
+gg2 <- df_tweets_mrq %>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name!=screen_name)%>%
+  select(name,Date,status_id,Text_clean) %>%
+  group_by(name,Date) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,Date,sentiment)%>%
+    count()%>%
+  filter(sentiment%in%senti_emo)%>%
+  pivot_wider(names_from=sentiment,values_from=n)%>%
+  mutate_all(funs(ifelse(is.na(.), 0, .)))%>%
+  mutate(Bal=((joy+trust+anticipation+surprise)/4)-((anger+disgust+fear+sadness)/4))%>%
+  ggplot(aes(x=Date,y=Bal,color=name))+geom_line(show.legend = FALSE)+ facet_grid(rows = vars(name))+ 
+  ggtitle("Balance des émotions pour les réponses") + xlab("Etendue de collecte") + 
+  ylab("Production") + labs(color="Marque",caption = "Source: Données collectées via Rtweet sur Twitter")+theme_minimal()+ylim(-5,5)+geom_smooth(method=lm , color="darkblue", se=TRUE,size=0.1)+ geom_line(aes(y = 0), color = "red", linetype = "dotted")
+
+ggarrange(gg1, gg2, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+```
+
+```{r 00132}
+gg1 <- df_tweets_mrq %>%
+  filter(Type=="Organiques")%>%
+  select(name,Date,status_id,Text_clean) %>%
+  group_by(name,Date) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,Date,sentiment)%>%
+    count()%>%
+  filter(sentiment%in%senti_pol)%>%
+  pivot_wider(names_from=sentiment,values_from=n)%>%
+  mutate_all(funs(ifelse(is.na(.), 0, .)))%>%
+  mutate(Bal=(positive-negative)/2)%>%
+  ggplot(aes(x=Date,y=Bal,color=name))+geom_line(show.legend = FALSE)+ facet_grid(rows = vars(name))+
+  ggtitle("Balance du sentiment des organiques") + xlab("Etendue de collecte") + 
+  ylab("Production") + labs(color="Marque",caption = "Source: Données collectées via Rtweet sur Twitter")+theme_minimal()+ylim(-2,10)+geom_smooth(method=lm , color="darkblue", se=TRUE,size=0.1)+ geom_line(aes(y = 0), color = "red", linetype = "dotted")
+
+gg2 <- df_tweets_mrq %>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name!=screen_name)%>%
+  select(name,Date,status_id,Text_clean) %>%
+  group_by(name,Date) %>%
+  unnest_tokens(output = word, input = Text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,Date,sentiment)%>%
+    count()%>%
+  filter(sentiment%in%senti_pol)%>%
+  pivot_wider(names_from=sentiment,values_from=n)%>%
+  mutate_all(funs(ifelse(is.na(.), 0, .)))%>%
+  mutate(Bal=(positive-negative)/2)%>%
+  ggplot(aes(x=Date,y=Bal,color=name))+geom_line(show.legend = FALSE)+ facet_grid(rows = vars(name))+
+  ggtitle("Balance du sentiment des réponses") + xlab("Etendue de collecte") + 
+  ylab("Production") + labs(color="Marque",caption = "Source: Données collectées via Rtweet sur Twitter")+theme_minimal()+ylim(-10,20)+geom_smooth(method=lm , color="darkblue", se=TRUE,size=0.1)+ geom_line(aes(y = 0), color = "red", linetype = "dotted")
+
+
+ggarrange(gg1, gg2, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+```
+
+Pour la balance des sentiments des réponses, cette dernière est stable
+pour les marques, exceptée pour Audi et Ford, où elle baisse et augmente
+respectivement.
+
+### Le corps de la production : premiers indicateurs lexicaux
+
+On se propose maintenant d'étudier les différents indicateurs lexicaux.
+
+On commence par les indicateurs de lisibilité sur le texte nettoyé et
+les tweets produits directement. On utilise l'indice de Flesch afin
+d'appréhender les différences dans la communication des marques
+concernant leurs tweets organiques : Plus ce dernier est important et
+plus la phrase est lisible et le message compréhensible. Il tient compte
+dans sa construction du nombre de mots par phrase (taille) ainsi que de
+la complexité du vocabulaire utilisé, mesuré par le nombre de syllabes
+par mots.
+
+```{r 0014}
+foo<-df_tweets_mrq%>%
+  ungroup()%>%
+  filter(Type=="Organiques")
+
+foo_ <- textstat_readability(foo$Text_clean, measure = c("Flesch","meanSentenceLength", "meanWordSyllables"),min_sentence_length = 2,max_sentence_length = 1000)
+
+foo<-cbind(foo,foo_[,2:4])
+
+foo1<-foo %>% 
+  group_by(name) %>%
+  summarise(Flesch=mean(Flesch, na.rm=TRUE), 
+            SentenceLength= mean(meanSentenceLength, na.rm=TRUE),
+            WordSyllables= mean(meanWordSyllables, na.rm=TRUE))%>%
+   gather(variable, value, -name)%>%
+  rename(Indicateur="variable")
+
+gg1 <- ggplot(foo1,aes(x=name, y=value, group=Indicateur))+
+  geom_line(size=1.2, aes(color=Indicateur), stat="identity")+
+  facet_wrap(vars(Indicateur), scale="free", ncol=1)+
+  labs(title = "Evolution de la lisibilité des tweets", x=NULL, y=NULL)+theme(axis.text.x=element_text(angle=15,hjust=0.2,size = 5))
+
+foo<-df_tweets_mrq%>%
+  ungroup()%>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name!=screen_name)
+
+foo_ <- textstat_readability(foo$Text_clean, measure = c("Flesch","meanSentenceLength", "meanWordSyllables"),min_sentence_length = 2,max_sentence_length = 1000)
+
+foo<-cbind(foo,foo_[,2:4])
+
+foo1<-foo %>% 
+  group_by(name) %>%
+  summarise(Flesch=mean(Flesch, na.rm=TRUE), 
+            SentenceLength= mean(meanSentenceLength, na.rm=TRUE),
+            WordSyllables= mean(meanWordSyllables, na.rm=TRUE))%>%
+   gather(variable, value, -name)%>%
+  rename(Indicateur="variable")
+
+gg2 <- ggplot(foo1,aes(x=name, y=value, group=Indicateur))+
+  geom_line(size=1.2, aes(color=Indicateur), stat="identity")+
+  facet_wrap(vars(Indicateur), scale="free", ncol=1)+
+  labs(title = "Evolution de la lisibilité des réponses", x=NULL, y=NULL)+theme(axis.text.x=element_text(angle=15,hjust=0.2,size = 5))
+
+foo<-df_tweets_mrq%>%
+  ungroup()%>%
+  filter(Type=="Organiques")
+
+foo_<-tokens(foo$text)%>%
+  textstat_lexdiv(foo$Text_clean, measure = c("CTTR", "Maas"),  log.base = 10,
+                  remove_numbers = TRUE,  
+                  remove_punct = TRUE,  
+                  remove_symbols = TRUE,
+                  remove_hyphens = TRUE)
+
+foo<-cbind(foo,foo_[,2:3])
+
+foo1<-foo %>% 
+  group_by(name) %>%
+  summarise(CTTR=mean(CTTR, na.rm=TRUE), 
+            Maas=mean(Maas, na.rm=TRUE)) %>%
+  gather(variable, value, -name)%>%
+  rename(Indicateur="variable")
+
+gg3 <- ggplot(foo1,aes(x=name, y=value, group=Indicateur))+
+  geom_line(size=1.2, aes(color=Indicateur), stat="identity")+
+  facet_wrap(vars(Indicateur), scale="free", ncol=1)+
+  labs(title = "Diversité lexicale des tweets", x=NULL, y=NULL)+theme(axis.text.x=element_text(angle=15,hjust=0.2,size = 5))
+
+foo<-df_tweets_mrq%>%
+  ungroup()%>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name!=screen_name)
+
+foo_<-tokens(foo$text)%>%
+  textstat_lexdiv(foo$Text_clean, measure = c("CTTR", "Maas"),  log.base = 10,
+                  remove_numbers = TRUE,  
+                  remove_punct = TRUE,  
+                  remove_symbols = TRUE,
+                  remove_hyphens = TRUE)
+
+foo<-cbind(foo,foo_[,2:3])
+
+foo1<-foo %>% 
+  group_by(name) %>%
+  summarise(CTTR=mean(CTTR, na.rm=TRUE), 
+            Maas=mean(Maas, na.rm=TRUE)) %>%
+  gather(variable, value, -name)%>%
+  rename(Indicateur="variable")
+
+gg4 <- ggplot(foo1,aes(x=name, y=value, group=Indicateur))+
+  geom_line(size=1.2, aes(color=Indicateur), stat="identity")+
+  facet_wrap(vars(Indicateur), scale="free", ncol=1)+
+  labs(title = "Diversité lexicale des réponses", x=NULL, y=NULL)+theme(axis.text.x=element_text(angle=15,hjust=0.2,size = 5))
+
+ggarrange(gg1, gg3,gg2,gg4, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+```
+Les réponses et les tweets organiques ont une lisibilité et une diversité lexicale dans les mêmes ordres de grandeur.
+
+Cependant chacune semble relever d'un savoir-faire différent, car les marques le mieux positionnées dans le cas des tweets organiques ne sont pas forcément bien positionnées pour les réponses. C'est le cas d'Audi ou Citroën, mal positionnées en termes de tweets primaires, elles sont pourtant dans les marques les mieux positionnées quand elles répondent.
+
+En effet, quand elles produisent un tweets, ces deux primères marques utilisent des phrases plus longues, avec des mots plus complexes, et une diversité lexicale plus importante.
+
+Porsche, a la méthodologie de réponse la plus adaptée : Des phrases courtes peu diversifiées, avec un vocabulaire simple.
+
+Toyota, au contraire, utilise des phrases plus longues, avec un vocabulaire plus complexe et diversifié.
+
+### Les mots des posts
+
+Après cette première approche autour des posts, on se propose d'en
+regarder maintenant le contenu de manière plus détaillée.
+
+```{r 0015}
+foo<-df_tweets_mrq%>%
+  filter(Type=="Organiques")
+foo$nb_mots<-str_count(foo$Text_clean, " ")+1
+sum_mots<-sum(foo$nb_mots)
+
+gg1 <- ggplot(foo,aes(x = nb_mots, y = name, group = name),fill = factor(stat(quantile))) +
+  geom_density_ridges(scale = 3,alpha=0.4,fill="peachpuff",quantile_lines=TRUE)+
+  theme_ridges() +
+  scale_x_continuous(limits = c(1, 70), expand = c(0, 0)) +
+  coord_cartesian(clip = "off")+
+    labs(x="Organiques", y=NULL)+
+  labs(title=paste0("Nombre de mots : ",sum_mots))
+
+foo<-df_tweets_mrq%>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name!=screen_name)
+foo$nb_mots<-str_count(foo$Text_clean, " ")+1
+sum_mots<-sum(foo$nb_mots)
+
+foo$nb_mots<-str_count(foo$Text_clean, " ")+1
+sum_mots<-sum(foo$nb_mots)
+
+foo <- foo%>%
+  select(nb_mots)
+
+gg2 <- ggplot(foo,aes(x = nb_mots, y = name, group = name),fill = factor(stat(quantile))) +
+  geom_density_ridges(scale = 3,alpha=0.4,fill="peachpuff",quantile_lines=TRUE)+
+  theme_ridges() +
+  scale_x_continuous(limits = c(1, 70), expand = c(0, 0)) +
+  coord_cartesian(clip = "off")+
+    labs(x="Réponses", y=NULL)+
+  labs(title=paste0("Nombre de mots : ",sum_mots))
+
+ggarrange(gg1, gg2, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+```
+
+Les publications organiques s'orientent pour la plupart autour de 20 mots. En revanche, les réponses sont généralement plus courtes, ou plus longues (10/30 mots).
+
+On cherche a visualiser les \# les plus fréquents dans les tweets
+primaires pour chacune des marques. Sur twitter, tous les mots ne se
+valent pas : certains servent à diffuser des sujets (\#), d'autres
+adressent.(\@)
+
+```{r 0016}
+
+foo <- df_tweets_mrq%>%
+  filter(Type=="Organiques")%>%
+  select(name,text,hashtags)%>%
+  unnest(hashtags)%>%
+  group_by(name,hashtags)%>%
+  count()%>%
+  arrange(desc(n))
+foo[is.na(foo)]="No_#"
+
+for (val in vect_name) {
+  foo_ <- foo%>%
+    filter(name==val)%>%
+    arrange(desc(n))%>%
+    head(30)
+gg_foo <- ggplot(foo_,aes(reorder(hashtags,n),n))+geom_bar(stat = "identity")+coord_flip()+facet_grid(rows = vars(name))+xlab("Hashtags")+ylab("Compte")+ labs(color="Marque",caption = "Source: Données collectées via Rtweet sur Twitter")+theme_minimal()
+  print(gg_foo)
+}
+
+```
+
+Les marques produisent des tweets sans \# dans la plupart des cas, ou
+alors se réfèrent à leur propre identité et leurs produits.
+
+Audi, utilise très peu de Hashtags.
+
+```{r 0018}
+
+foo <- df_tweets_mrq%>%
+  filter(Type=="Organiques")%>%
+  select(name,text,mentions_screen_name)%>%
+  unnest(mentions_screen_name)%>%
+  group_by(name,mentions_screen_name)%>%
+  count()%>%
+  arrange(desc(n))
+foo[is.na(foo)]="No_@"
+
+for (val in vect_name) {
+  foo_ <- foo%>%
+    filter(name==val,mentions_screen_name!="No_@")%>%
+    arrange(desc(n))%>%
+    head(30)
+gg_foo <- ggplot(foo_,aes(reorder(mentions_screen_name,n),n))+geom_bar(stat = "identity")+coord_flip()+xlab("Mentions")+ylab("Compte")+ labs(color="Marque",caption = "Source: Données collectées via Rtweet sur Twitter")+theme_minimal()+ggtitle(val)
+  print(gg_foo)
+}
+
+```
+
+Pour les mentions, les marques semblent référer le plus à leurs
+sponsors, égeries ou filiales/membres du groupe.
+
+### Les mots et leurs catégories lexicales
+On prépare la base en se focalisant sur les tweets organiques,
+directement produits par les marques.
+
+```{r 00180}
+gc()
+#lecture du dictionnaire
+dict_brut <- readxl::read_excel("adjectifs de marque.xlsx")
+
+#Factorisation des catégories du tableau excel chargé
+vect_cat <- as.factor(dict_brut$`Facteur Ocean`)
+##Lecture des niveaux des catégories
+vect_cat <- levels(vect_cat)
+##Création d'un vecteur libre pour création dictionnaire
+dict_net <- c()
+
+#Création du dictionnaire
+for (val in vect_cat) {
+  foo <- dict_brut%>%filter(`Facteur Ocean`==val)
+  a <- foo$Regex_detec
+  dict_net[[val]] <- a
+  }
+dict_net <- dictionary(dict_net)
+```
+
+```{r 001800}
+df_toks <- data.frame()
+
+df_foo <- df_tweets_mrq%>%
+  group_by(name,status_id,Text_clean)%>%
+  filter(Type!="Retweets")%>%
+  mutate(Text_cleanTok =Text_clean)%>%
+  unnest_tokens(Toks,Text_cleanTok)
+#table(str_detect(df_foo$Toks,"ambi"))
+```
+
+```{r 0018000}
+
+for (val in vect_cat) {
+  foo <- dict_brut%>%filter(`Facteur Ocean`==val)
+  list_regex_ocean <- foo$Regex_detec
+  list_regex_ocean <- paste0("\\b",list_regex_ocean,"\\b", collapse="|")
+  foo <- df_foo
+  foo$Presence <- str_detect(foo$Toks,list_regex_ocean)
+  foo<-foo%>%
+    filter(Presence=="TRUE")
+  print(foo)
+  df_toks<-rbind(df_toks,foo)
+  }
+
+##suppression des adverbes
+library(SnowballC)
+df_toks<-df_toks%>%
+  mutate(ADV=str_detect(Toks,"ement"))%>%
+  filter(ADV=="FALSE")%>%
+  mutate(NOM=str_detect(Toks,"tion|teur|trice"))%>%
+  filter(NOM=="FALSE")%>%
+  mutate(Stem=wordStem(Toks))
+
+vect_stem <- levels(as.factor(df_toks$Stem))
+vect_stem <- paste0("\\b",vect_stem, collapse="|")
+
+dict_brut%>%
+  mutate(OCEAN=str_detect(`Français ( lemme) ( Première lettre minuscule)`,vect_stem))%>%
+  filter(OCEAN=="TRUE")
+```
+
+
+```{r 0019}
+vect_rep_org <- c("Organiques","Replies")
+foo1<-df_tweets_mrq%>%
+  filter(Type=="Organiques")
+foo2<-df_tweets_mrq%>%
+  filter(Type=="Replies")%>%
+  filter(reply_to_screen_name==screen_name)
+
+df_annot <- df_tweets_mrq%>%
+  filter(Type %in%vect_rep_org)
+
+#df_annot <- bind_rows(foo1,foo2)
+
+df_annot$Text_clean<-tolower(df_annot$Text_clean)
+
+```
+
+On utilise UD afin d'annoter les tweets et d'étudier la réparition des
+catégories grammaticales.
+
+```{r 0020}
+
+###déja téléchargée df_trt_annot
+#udpipe_download_model("french")
+udmodel <- udpipe_load_model("french-gsd-ud-2.5-191206.udpipe")
+
+annot_ud <- udpipe_annotate(udmodel,df_annot$Text_clean, doc_id = df_annot$status_id)
+
+annot_ud <- as.data.frame(annot_ud)
+
+names(annot_ud)[names(annot_ud) == "doc_id"] <- "status_id"
+
+df_trt_annot <- left_join(annot_ud,df_annot)
+
+#saveRDS(df_trt_annot,"Annotation_220125.rds")
+
+df_trt_adj <- df_trt_annot%>%
+  filter(upos=="ADJ")%>%
+  mutate(Nbcar=nchar(lemma),Mention=str_detect(lemma,"\\@"))%>%
+  filter(Nbcar>2,Mention=="FALSE")
+```
+
+Sans grande surprise, les catégories les plus présentes sont donc les
+noms, verbes et adjectifs.
+
+```{r 0021}
+library(quanteda)
+vect_upos <- c("ADJ","VERB","NOUN","AUX","ADV","PRON")
+foo <- df_trt_annot%>%
+  filter(upos%in%vect_upos)%>%
+  group_by(name,upos)%>%
+  count()%>%
+  filter(upos!="NA")%>%
+  arrange(desc(n))
+
+
+ggplot(foo,aes("",n,fill=upos))+geom_bar(stat = "identity", position="fill", color='white') + facet_wrap(~name) +  ylab("Décompte des catégories") + xlab("Part of Speech")+coord_polar("y",start = 0)+theme_void()
+
+```
+
+On propose de se concentrer sur les adjectifs qui expriment le plus une personnalité.
+
+```{r 0022}
+df_trt_adj<-df_trt_adj%>%
+  filter(lemma!="ème")%>%
+  filter(lemma!="même")
+
+mydfm <- dfm(df_trt_adj$lemma)
+
+docvars(mydfm,"Marque")<-df_trt_adj$name
+
+
+fo<-mydfm %>%
+  dfm_group(groups = Marque)%>%
+    dfm_trim(min_termfreq = 10,
+             max_termfreq = 35,
+             verbose = FALSE)
+
+freq <- textstat_frequency(fo, group =Marque)
+
+freq<-freq%>%
+  filter(frequency>5)
+
+
+set.seed(42)
+library(ggwordcloud)
+ggplot(freq, aes(label = feature)) +
+  geom_text_wordcloud(aes(size=frequency, color=rank)) +
+  theme_minimal()+facet_wrap(vars(group)) +  scale_size_area(max_size = 5) + 
+  scale_color_gradient(low = "darkblue", high = "red")
+
+```
+
+Pour autant, cette première approche nous renseigne de manière générale
+sur la teneur des tweets. On cherche à connaître les 40 adjectifs les
+plus cités par chacune des marques.
+
+```{r 0023}
+library(quanteda)
+library(quanteda.textplots)
+library(quanteda.textstats)
+
+
+#Génération mots les plus utilisés par marque
+for (val in vect_name) {
+  foo <- dfm_subset(mydfm,Marque==val)
+  
+  foo <- foo %>% 
+  textstat_frequency(n = 40) %>% 
+  ggplot(aes(x = reorder(feature, frequency), y = frequency)) +
+  geom_point() +
+  coord_flip() +
+  labs(x = val, y = "Frequency") +
+  theme_minimal()
+  print(foo)
+}
+
+```
+
+L'action de promouvoir le caractère neuf est le plus diffusé. Les
+adjectifs les plus utilisés ne renvoient pas directement à des éléments
+de personnalité humaine.
+
+On utilise un dictionnaire afin de pouvoir identifier plus précisément
+les éléments de personnalité dans les différentes productions.
+
+```{r 0024}
+library(seededlda)
+library(flextable)
+
+facto_mrq <- data.frame()
+mydfm <- dfm(df_trt_adj$lemma)
+docvars(mydfm,"Marque")<-df_trt_adj$name
+
+mydfm.un.trim <-
+  dfm_trim(
+  mydfm,
+  min_termfreq = 0.0001,
+  max_termfreq = 0.01,
+  termfreq_type ="prop")
+
+
+for (val in vect_name) {
+
+foo <- dfm_subset(mydfm.un.trim,Marque==val)
+
+lda <- textmodel_seededlda(
+  foo,
+  dict_net,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  alpha = NULL,
+  beta = NULL)
+
+foo <- terms(lda)
+foo <- as.data.frame(foo)
+foo<-foo%>%select(1:10)
+print(kable(foo, caption = val))
+#too <- flextable(foo)
+#too <- set_caption(too,val)
+
+
+}
+
+```
+
+Le dictionnaire permet d'aller chercher plus finement les éléments de
+personnalité.
+
+Cette approche ne permet pas de savoir la prédominance d'une dimension à
+l'égard d'une autre au sein des productions. Ici, on sélectionne les
+éléments présents.
+
+```{r 0025}
+library(seededlda)
+library(flextable)
+facto_mrq <- data.frame()
+
+foo <- df_trt_adj%>%
+  group_by(name,Text_clean)%>%
+  count()%>%
+  select(name,Text_clean)
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+fooo <- foo %>%
+  group_by(name)%>%
+  mutate(name=strsplit(name," ")[[1]][1])%>%
+  ungroup()
+
+
+for (val in vect_name) {
+
+foo <- fooo%>%
+  filter(name==val)
+
+toks <- tokens(foo$Text_clean)
+toks <- tokens_remove(toks, stopwords('french'), valuetype = 'fixed', padding = TRUE)
+
+foo <- dfm(toks,remove_padding = TRUE,tolower = TRUE)
+
+lda <- textmodel_seededlda(
+  foo,
+  dict_net,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  alpha = NULL,
+  beta = NULL)
+
+foo <- as.data.frame(lda$theta)
+foo <- foo%>%mutate(Marque=val)
+facto_mrq <- rbind(facto_mrq,foo)
+
+}
+
+data <- facto_mrq%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==1)
+
+gg1 <- ggplot(data,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=Scores_mn - Score_sd,ymax=Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(data,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+```
+
+```{r 0026}
+data <- facto_mrq%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  group_by(Marque,facteurs)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE))%>%
+  pivot_wider(names_from = "facteurs",values_from = "Scores_mn")
+
+library(FactoMineR)
+library(factoextra)
+
+data_pca <- PCA(data[,2:11])
+
+fgg <- fviz_pca_biplot(data_pca, repel = TRUE,
+                col.var = "#2E9FDF", # Couleur des variables
+                col.ind = "#696969",
+                label = "var"
+                )
+lab <- as.data.frame(data_pca$ind$coord)
+lab$Marque <- data$Marque
+#explor::explor(data_pca)
+fgg+
+  geom_text(data = lab, aes(x = Dim.1, y = Dim.2, label = Marque), hjust = -.1, vjust =-.1)
+  
+```
+
+====
+
+## Etudier les réponses des internautes
+
+On lit les bases des réponses successivement.
+```{r 100}
+#List_loop
+data <- (Sys.glob("*.rds"))
+data <- as.data.frame(data)%>%
+  filter(str_detect(data,"reply"))%>%
+  as.list(data)%>%
+  unlist()
+
+list_df <- lapply(data, function(x) readRDS(x))
+
+#Bind
+df_reply_mrq <- bind_rows(list_df)
+
+#Unique test
+#df_reply_mrq <- unique(df_reply_mrq)
+
+#Unique test
+doublons <- which(duplicated(df_reply_mrq$status_id))
+df_reply_mrq <- df_reply_mrq[-doublons,]
+
+
+df_reply_mrq$Date <- ceiling_date(df_reply_mrq$created_at,"days")
+
+fct<-levels(as.factor(df_reply_mrq$reply_to_screen_name))
+
+df_reply_mrq <- df_reply_mrq%>%
+  mutate(Auto_Rep=ifelse(reply_to_screen_name==screen_name,1,0),
+         name=ifelse(reply_to_screen_name=="AudiFrance","Audi",
+                     ifelse(reply_to_screen_name=="CitroenFrance","Citroen",
+                            ifelse(reply_to_screen_name=="FordFrance","Ford",
+                                   ifelse(reply_to_screen_name=="HyundaiFrance","Hyundai",
+                                          ifelse(reply_to_screen_name=="MBFRANCE_","Mercedes",
+                                                 ifelse(reply_to_screen_name=="nissanfrance","Nissan",
+                                                        ifelse(reply_to_screen_name=="PeugeotFR","Peugeot",
+                                                               ifelse(reply_to_screen_name=="Porsche_France","Porsche",
+                                                                      ifelse(reply_to_screen_name=="renault_fr","Renault",
+                                                                             ifelse(reply_to_screen_name=="ToyotaFrance","Toyota",
+                                                                                    ifelse(reply_to_screen_name=="vw_france","Volkswagen",0))))))))))))
+
+#On identifie les marques subissant des messages se répétant
+txt_out_repeat <- df_reply_mrq%>%
+  group_by(name)%>%
+  count(text_clean)%>%
+  arrange(desc(n))%>%
+  filter(n==1)
+
+#On crée un vecteur avec les messages uniques
+txt_out_repeat<-txt_out_repeat$text_clean
+
+# On conserve les noms des marques dans un vecteur
+vect_name_rpl <- levels(as.factor(df_reply_mrq$name))
+
+# On filtre afin de n'obtenir que les réponses uniques/publiées qu'une fois
+df_reply_mrq_unique <- df_reply_mrq%>%
+  filter(Auto_Rep==0)%>%
+  filter(text_clean%in%txt_out_repeat)
+
+```
+
+### Nombre de réponses des utilisateurs par marque
+
+Les réponses collectées sont très inégales. Hyundaï, Renault et Citroën en on plus de 200 par mois, Nissan en a moins de 10.
+```{r 101}
+
+foo <- df_reply_mrq_unique%>%
+  group_by(name)%>%
+  count(name)%>%
+  arrange(desc(n))
+
+foo%>%
+  ggplot(aes(reorder(name,n),n,fill=name))+geom_bar(stat = "identity")+coord_flip()+xlab("Marque")+ylab("Nombre de réponses")+ theme(legend.position = "none")
+
+```
+
+### Nombre de réponses dans le temps
+
+Le volume de réponses des utilisateurs varie entre 0 et 20 réponses hebdomadaires. La production connaît deux pics pour Citroën sur la semaine du 24 au 31 janvier, et un pic pour Hyundai la semaine du 14 au 21 février.
+```{r 102}
+
+foo <- df_reply_mrq_unique%>%
+  group_by(name,Date)%>%
+  count(name)%>%
+  arrange(desc(n))
+
+foo%>%
+  ggplot(aes(Date,n,color=name))+geom_line()+facet_grid(rows = vars(name))+ theme_minimal()+ ggtitle("Nombre de réponses quotidiennes") + xlab("Jour de publication") + ylab("") + labs(caption = "Source: Données collectées via Rtweet sur Twitter")+ylim(0,20)
+
+```
+### Nombre de mots par réponse
+```{r 103}
+df_reply_mrq_unique$nb_mots<-str_count(df_reply_mrq_unique$text, " ")+1
+sum_mots<-sum(df_reply_mrq_unique$nb_mots)
+
+foo <- df_reply_mrq_unique%>%
+  group_by(name)%>%
+  select(nb_mots)
+
+ggplot(foo,aes(x = nb_mots, y = name, group = name),fill = factor(stat(quantile))) +
+  geom_density_ridges(scale = 3,alpha=0.4,fill="peachpuff",quantile_lines=TRUE)+
+  theme_ridges() +
+  scale_x_continuous(limits = c(1, 70), expand = c(0, 0)) +
+  coord_cartesian(clip = "off")+
+    labs(x="Nombre de mots par post", y=NULL)+
+  labs(title=paste0("Nombre total de mots du corpus : ",sum_mots))
+```
+
+On remarque que par rapport aux tweets primaires, les réponses des
+utilisateurs sont bien plus courtes, excepté pour Nissan.
+
+
+### Lisibilité et diversité lexicale des réponses des utilisateurs.
+```{r 104}
+
+foo<-df_reply_mrq_unique%>%
+  ungroup()
+
+foo_ <- textstat_readability(foo$text_clean, measure = c("Flesch","meanSentenceLength", "meanWordSyllables"),min_sentence_length = 2,max_sentence_length = 1000)
+
+foo<-cbind(foo,foo_[,2:4])
+
+foo1<-foo %>% 
+  group_by(name) %>%
+  summarise(Flesch=mean(Flesch, na.rm=TRUE), 
+            SentenceLength= mean(meanSentenceLength, na.rm=TRUE),
+            WordSyllables= mean(meanWordSyllables, na.rm=TRUE))%>%
+   gather(variable, value, -name)
+
+ggplot(foo1,aes(x=name, y=value, group=variable))+
+  geom_line(size=1.2, aes(color=variable), stat="identity")+
+  facet_wrap(vars(variable), scale="free", ncol=1)+
+  labs(title = "Evolution de la lisibilité des réponses", x=NULL, y=NULL)
+
+```
+
+```{r 105}
+foo<-df_reply_mrq_unique%>%
+  ungroup()%>%
+  filter(is_retweet=="FALSE",is_quote=="FALSE")
+
+foo_<-tokens(foo$text)%>%
+  textstat_lexdiv(foo$Text_clean, measure = c("CTTR", "Maas"),  log.base = 10,
+                  remove_numbers = TRUE,  
+                  remove_punct = TRUE,  
+                  remove_symbols = TRUE,
+                  remove_hyphens = TRUE)
+
+foo<-cbind(foo,foo_[,2:3])
+
+foo1<-foo %>% 
+  group_by(name) %>%
+  summarise(CTTR=mean(CTTR, na.rm=TRUE), 
+            Maas=mean(Maas, na.rm=TRUE)) %>%
+  gather(variable, value, -name)
+
+ggplot(foo1,aes(x=name, y=value, group=variable))+
+  geom_line(size=1.2, aes(color=variable), stat="identity")+
+  facet_wrap(vars(variable), scale="free", ncol=1)+
+  labs(title = "Evolution de la diversité lexicale des tweets", x=NULL, y=NULL)
+
+```
+### Analyse du sentiment des réponses
+```{r 106}
+
+df_reply_mrq_unique %>%
+  select(name,status_id,text_clean) %>%
+  unnest_tokens(output = word, input = text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_emo)%>%
+  ggplot(aes(x="", y = n, fill=sentiment))+ 
+  geom_bar(stat='identity', position="fill", color='white')+
+  ggtitle("Répartition par nature d'émotion") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+
+df_reply_mrq_unique %>%
+  select(name,status_id,text_clean) %>%
+  unnest_tokens(output = word, input = text_clean) %>%
+  inner_join(get_sentiments('nrc')) %>%
+  group_by(name,sentiment) %>%
+    count()%>%
+  filter(sentiment%in%senti_pol)%>%
+  ggplot(aes(x="", y = n, fill=sentiment))+ 
+  geom_bar(stat='identity', position="fill", color='white')+
+  ggtitle("Répartition par polarité") + xlab("") + ylab("")+
+  facet_wrap(~name)+
+  coord_polar("y",start = 0)+ 
+  theme_void()
+```
+
+
+### Catégories lexicales des réponses
+
+```{r 108}
+df_reply_mrq_unique$text_clean<-tolower(df_reply_mrq_unique$text_clean)
+###déja téléchargée df_trt_annot
+#udpipe_download_model("french")
+udmodel <- udpipe_load_model("french-gsd-ud-2.5-191206.udpipe")
+
+annot_ud <- udpipe_annotate(udmodel,df_reply_mrq_unique$text_clean, doc_id = df_reply_mrq_unique$status_id)
+
+annot_ud <- as.data.frame(annot_ud)
+
+names(annot_ud)[names(annot_ud) == "doc_id"] <- "status_id"
+
+df_trt_annot_reply <- left_join(annot_ud,df_reply_mrq_unique)
+
+#saveRDS(df_trt_annot,"Annotation_220125.rds")
+
+df_trt_adj_reply <- df_trt_annot_reply%>%
+  filter(upos=="ADJ")%>%
+  mutate(Nbcar=nchar(lemma),Mention=str_detect(lemma,"\\@"))%>%
+  filter(Nbcar>2,Mention=="FALSE")
+```
+
+```{r 109}
+library(quanteda)
+vect_upos <- c("ADJ","VERB","NOUN","AUX","ADV","PRON")
+foo <- df_trt_annot_reply%>%
+  filter(upos%in%vect_upos)%>%
+  group_by(name,upos)%>%
+  count()%>%
+  filter(upos!="NA")%>%
+  arrange(desc(n))
+
+ggplot(foo,aes(reorder(upos,n),n,fill=upos))+geom_bar(stat = "identity") + facet_wrap(~name) +  ylab("Décompte des catégories") + xlab("Part of Speech")+coord_flip()
+
+```
+
+```{r 10010}
+library(quanteda)
+library(quanteda.textplots)
+library(quanteda.textstats)
+
+my_dfm_reply <- dfm(df_trt_adj_reply$lemma,remove_padding = TRUE,tolower = TRUE)
+
+docvars(my_dfm_reply,"Marque")<-df_trt_adj_reply$name
+
+```
+### Les mots les plus utilisés par Marque
+```{r 10011}
+
+#Génération mots les plus utilisés par marque
+for (val in vect_name_rpl) {
+  foo <- dfm_subset(my_dfm_reply,Marque==val)
+  
+  foo <- foo %>% 
+  textstat_frequency(n = 20) %>% 
+  ggplot(aes(x = reorder(feature, frequency), y = frequency)) +
+  geom_point() +
+  coord_flip() +
+  labs(x = val, y = "Frequency") +
+  theme_minimal()
+  print(foo)
+}
+
+```
+
+
+```{r 10013}
+library(seededlda)
+library(flextable)
+
+for (val in vect_name_rpl) {
+
+foo <- dfm_subset(my_dfm_reply,Marque==val)
+
+lda <- textmodel_seededlda(
+  foo,
+  dict_net,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = TRUE,
+  alpha = NULL,
+  beta = NULL)
+
+foo <- terms(lda)
+foo <- as.data.frame(foo)
+foo<-foo%>%select(1:10)
+print(kable(foo, caption = val))
+#too <- flextable(foo)
+#too <- set_caption(too,val)
+#print(too)
+
+}
+
+```
+
+
+Le dictionnaire permet d'aller chercher plus finement les éléments de
+personnalité.
+
+Cette approche ne permet pas de savoir la prédominance d'une dimension à
+l'égard d'une autre au sein des productions. Ici, on sélectionne les
+éléments présents.
+
+```{r 10014}
+library(seededlda)
+library(flextable)
+facto_mrq <- data.frame()
+
+foo <- df_trt_adj_reply%>%
+  group_by(name,text_clean)%>%
+  count()%>%
+  select(name,text_clean)
+
+foo <- as.data.frame(t(sapply(seq(1, nrow(foo), by = 2), function(i)
+                     apply(foo[i:(i+1),], 2, paste, collapse=" "))))
+
+
+fooo <- foo %>%
+  group_by(name)%>%
+  mutate(name=strsplit(name," ")[[1]][1])%>%
+  ungroup()
+
+
+for (val in vect_name_rpl) {
+
+foo <- fooo%>%
+  filter(name==val)
+
+toks <- tokens(foo$text_clean)
+toks <- tokens_remove(toks, stopwords('french'), valuetype = 'fixed', padding = TRUE)
+
+foo <- dfm(toks,remove_padding = TRUE,tolower = TRUE)
+
+lda <- textmodel_seededlda(
+  foo,
+  dict_net,
+  valuetype = "regex",
+  max_iter = 2000,
+  residual = FALSE,
+  alpha = NULL,
+  beta = NULL)
+
+foo <- as.data.frame(lda$theta)
+foo <- foo%>%mutate(Marque=val)
+facto_mrq <- rbind(facto_mrq,foo)
+
+}
+
+data <- facto_mrq%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  mutate(Groupe=ifelse(str_detect(facteurs,"\\+"),1,0))%>%
+  filter(facteurs!="other")%>%
+  group_by(Marque,facteurs,Groupe)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE), Score_sd = sd(Scores,na.rm = TRUE))%>%
+  mutate(Scores=ifelse(Groupe==0,-Scores_mn,Scores_mn))%>%
+  mutate(Dim=substring(facteurs,1,1))%>%
+  filter(Groupe==1)
+
+gg1 <- ggplot(data,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + geom_ribbon(aes(ymin=Scores_mn - Score_sd,ymax=Scores_mn + Score_sd), alpha=0.2) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg1)
+gg0 <- ggplot(data,aes(x=reorder(Dim,Scores),y=Scores,group=Groupe)) + geom_line(aes(color=Groupe)) + facet_wrap(vars(Marque)) + coord_flip()
+print(gg0)
+```
+
+```{r 10015}
+data <- facto_mrq%>%
+  pivot_longer(-Marque,names_to = "facteurs",values_to = "Scores")%>%
+  group_by(Marque,facteurs)%>%
+  summarise(Scores_mn = mean(Scores,na.rm=TRUE))%>%
+  pivot_wider(names_from = "facteurs",values_from = "Scores_mn")
+
+library(FactoMineR)
+library(factoextra)
+
+data_pca <- PCA(data[,2:11])
+
+fgg <- fviz_pca_biplot(data_pca, repel = TRUE,
+                col.var = "#2E9FDF", # Couleur des variables
+                col.ind = "#696969",
+                label = "var"
+                )
+lab <- as.data.frame(data_pca$ind$coord)
+lab$Marque <- data$Marque
+#explor::explor(data_pca)
+fgg+
+  geom_text(data = lab, aes(x = Dim.1, y = Dim.2, label = Marque), hjust = -.1, vjust =-.1)
+  
+```
+
+
+```{r 10016}
+library(topicmodels)
+
+for (val in vect_name_rpl) {
+
+foo <- dfm_subset(my_dfm_reply,Marque==val)
+
+lda_model <- LDA(x = foo, k = 5, control = list(seed = 2811))
+tidy_model_beta <- tidy(lda_model, matrix = "beta")
+
+foo <- tidy_model_beta %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ggplot(aes(reorder(term, beta), beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_fill_viridis_d() + 
+  coord_flip() + 
+  labs(x = "Topic", 
+       y = "beta score", 
+       title = val)
+print(foo)
+}
+
+```
+
+```{r qualitative_targetters}
+vect_politique <- c("slpng_giants_fr","LesCorsairesFr")
+vect_presse_gen <- c("wansquare")
+vect_presse_spe <- c("ae_magazine","blogautomobile","JJODRY")
+vect_pro_auto_ind <- c("soldi3r57")
+vect_pro_auto_inst <- c("Reezocar","Blooweels")
+vect_inst <- c("poleemploi_HDF","talents4planet")
+vect_pro_fin <- c("CentralCharts")
+```

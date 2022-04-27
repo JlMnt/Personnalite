@@ -1,0 +1,201 @@
+---
+title: "digger_marques"
+author: "Julien Monnot"
+date: "15/01/2022"
+output: html_document
+---
+
+#Diguer la marque Renault
+
+```{r cars}
+#Ne runner que plusieurs fois les tweets produits par les utilisateurs (look_up)
+library(rtweet)
+library(dplyr)
+library(stringr)
+library(igraph)
+
+#Extraire les followers d'une page, sauvegarder le fichier
+renault <- get_followers("renault_fr",n=750000,retryonratelimit = TRUE)
+saveRDS(renault,paste("20220117_df_renault_users",".rds"))
+
+#Scrapper les messages des followers, conserver ceux la citant,sauvegarder
+renault_users <- lookup_users(renault$user_id)
+renault_users_fr <- renault_users%>%mutate(Evoque=str_detect(text,"renault_fr"))%>%filter(lang=="fr",is_retweet=="FALSE",Evoque=="TRUE")
+saveRDS(renault_users_fr,paste("20220117_df_renault_users_tweets",".rds"))
+
+#Scrapper les 3250 derniers tweets de la marque, sauvegarder le fichier
+ren_tweets <- get_timeline("renault_fr",n=5000)
+saveRDS(ren_tweets,paste("20220117_df_renault_tweets",".rds"))
+
+```
+
+network_graph()
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure}
+
+#Demander la date, scrapper les tweets de la marque, sauvegarder le fichier
+date <- Sys.Date()
+Y <- c("@renault_fr")
+
+for (val in Y) {
+  tweets2 <- search_tweets(val,lang="fr",n=200000,retryonratelimit = TRUE)%>%mutate(Marque=val)
+  saveRDS(tweets2,paste(date,"_df_brut_",val,".rds"))
+}
+
+```
+
+```{r doublons}
+#tweets primaires, détection des doublons, suppression des doublons
+
+df_brut <- tweets2%>%filter(is_retweet=="FALSE")
+doublons <- which(duplicated(df_brut$status_id))
+df_net <- df_brut[-doublons,]
+
+#Nettoyage du text
+foo <- df_net$text
+
+#Retrait des mentions
+foo <- gsub("@\\w+","",foo)
+
+#Retrait des #
+foo <- gsub('#\\w+',"",foo)
+
+#Retrait des émojis
+foo <- str_remove_all(string = foo, pattern = '[:emoji:]')
+
+#Retrait des sauts de lignes
+foo <- gsub('\n',"",foo)
+
+#Retrait des URL
+foo <- gsub('http\\S+\\s*',"",foo)
+
+#Retrait des nombres
+foo <- gsub('\\d',"",foo)
+
+#Retrait des amp
+foo <- gsub('&amp;',"",foo)
+
+#Retrait de la ponctuation
+foo <- gsub('[[:punct:]]'," ",foo)
+
+#Retrait des lettres seules
+foo <- gsub('\\W*\\b\\w\\b\\W*'," ",foo)
+
+#Retrait des espaces
+foo <- gsub('\\s+$',"",foo)
+
+#Retrait des espaces
+foo <- gsub('^\\s+',"",foo)
+
+#récupération du texte nettoyé
+df_net$text_clean <- foo
+
+#détection des doublons sur text nettoyé
+doublons <- which(duplicated(df_net$text_clean))
+df_net <- df_net[-doublons,]
+
+#Count des textes identiques
+df_net%>%
+  count(text_clean)%>%
+  arrange(desc(n))
+
+```
+
+```{r text_splitter}
+date <- Sys.Date()
+#On extrait les messages produit >1, on crée un vecteur, on filtre la base, svg
+vect_message_diff <- df_net%>%
+  count(text_clean)%>%
+  arrange(desc(n))%>%
+  filter(n>1)
+vect_message_diff <- vect_message_diff$text_clean
+foo1 <- df_net%>%filter(text_clean%in%vect_message_diff)
+saveRDS(foo1,paste(date,"_df_twt_diff_",".rds"))
+
+#On extrait les messages produit ==1, on crée un vecteur, on filtre la base, svg
+vect_message_diff <- df_net%>%
+  count(text_clean)%>%
+  arrange(desc(n))%>%
+  filter(n==1)
+vect_message_diff <- vect_message_diff$text_clean
+foo2 <- df_net%>%filter(text_clean%in%vect_message_diff)
+
+saveRDS(foo2,paste(date,"_df_twt_express",".rds"))
+```
+foo2 <- foo2%>%mutate(Evoque=str_detect(text,"Les spectateurs de @CNEWS"))%>%filter(Evoque=="FALSE")
+
+```{r qualitative_targetters}
+vect_politique <- c("slpng_giants_fr","LesCorsairesFr")
+vect_presse_gen <- c("wansquare")
+vect_presse_spe <- c("ae_magazine","blogautomobile","JJODRY")
+vect_pro_auto_ind <- c("soldi3r57")
+vect_pro_auto_inst <- c("Reezocar","Blooweels")
+vect_inst <- c("poleemploi_HDF","talents4planet")
+vect_pro_fin <- c("CentralCharts")
+```
+AMimardo -- Pdr bus parisien et conducteur train sncf 
+soldi3r57 --> Modérateur Alpine
+
+```{r Table_brand_digger}
+date
+nrow(tweets2)
+nrow(tweets2%>%filter(is_retweet=="TRUE"))
+nrow(tweets2%>%filter(is_quote=="TRUE"))
+nrow(df_net%>%count(user_id)%>%arrange(desc(n)))
+max(df_net$created_at)
+min(df_net$created_at)
+df_brand <- list(Jour = c("2022-01-17"),
+                 Nb.Dig = c("2044"),
+                 Nb.Prim = c("1186"),
+                 Nb.Rt = c("855"),
+                 Nb.Dbl = c("3"),
+                 Nb.Qt = ("15"),
+                 Nb.Users = c("819"),
+                 Mx.Prod = c("14"),
+                 Nb.Diff = ("946"),
+                 Nb.Exp = c("240"),
+                 Mx.Dat  = c("2022-01-17 22:13:25"),
+                 Mn.Dat = c("2022-01-09 12:06:54")
+                 )
+```
+GUEULES DU RUGBY
+@GueulesduRugby
+·
+Jan 16
+2022 pour le tome 3..
+Qui nous prête 2 véhicules pour nos tournages ? 
+@LandRoverFrance
+ 
+@renault_fr
+ 
+@HyundaiFrance
+ 
+@MazdaFrance
+ 
+@ToyotaFrance
+ 
+@AudiFrance
+ 
+@nissanfrance
+ 
+@PeugeotFR
+ 
+@MBFRANCE_
+ 
+@teslafrance
+ 
+@CitroenFrance
+ 
+@kiafrance
+ 
+@JeepFrance
+ 
+@FiatFr
+ 
+@vw_france
+ 
+@AlfaRomeo_Fra
